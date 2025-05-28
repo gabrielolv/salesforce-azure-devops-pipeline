@@ -1,0 +1,61 @@
+trigger: none  # This pipeline will not trigger automatically
+
+pr: none  # This pipeline will not trigger on pull requests
+
+parameters:
+  - name: group
+    type: string
+    default: 'obsglobal--sfdev'
+    values:
+      - 'SalesforceVariables'
+      - 'obsglobal--sfdev'
+      - 'obsglobal--sftest'
+      - 'obsglobal--sfuat'
+      - 'obsglobal--sfprod'
+
+pool:
+  vmImage: "ubuntu-latest"
+
+variables:
+  - group: ${{parameters['group']}}
+  - name: SfConfigDev
+    value: |
+      {
+        "SF_CLIENT_ID": "$(SF_CLIENT_ID)",
+        "SF_CLIENT_SECRET": "$(SF_CLIENT_SECRET)",
+        "SF_USERNAME": "$(SF_USERNAME)",
+        "SF_PASSWORD": "$(SF_PASSWORD)",
+        "SF_LOGIN_URL": "$(SF_LOGIN_URL)"
+      }
+  - name: system.debug
+    value: false
+
+jobs:
+  - job: EncodeDecodeString
+    steps:
+      - task: Bash@3
+        inputs:
+          targetType: "inline"
+          script: |
+            encode_string() {
+                echo -n "$1" | base64
+            }
+
+            decode_string() {
+                echo "$1" | base64 --decode
+            }
+
+            # Extract the JSON string from the pipeline variable
+            json_string='$(SfConfigDev)'
+            echo $json_string
+            echo 'creating createFile'
+            echo 'Pipeline.Workspace: $(Pipeline.Workspace)'
+            echo $json_string > $(Pipeline.Workspace)/myVar.txt
+
+            echo 'create createFile'
+        displayName: Create File
+      - task: PublishPipelineArtifact@1
+        inputs:
+          targetPath: "$(Pipeline.Workspace)/myVar.txt"
+          artifact: "MyArtifact"
+        displayName: Publish File

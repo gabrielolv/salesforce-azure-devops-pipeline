@@ -1,0 +1,321 @@
+trigger:
+  - develop
+  - test
+  - uat
+  - main
+
+parameters:
+  - name: CommitHash
+    type: string
+    default: ''
+    
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - ${{ if eq(variables['Build.SourceBranchName'], 'develop') }}:
+        - group: obsglobal--sfdev
+  - ${{ if eq(variables['Build.SourceBranchName'], 'test') }}:
+        - group: obsglobal--sftest
+  - ${{ if eq(variables['Build.SourceBranchName'], 'uat') }}:
+        - group: obsglobal--sfuat
+  - ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+        - group: obsglobal--sfprod
+        
+  - name: system.debug
+    value: true
+
+  - name: commitHashParam
+    value: ${{parameters.CommitHash}}
+
+steps:
+  - checkout: self
+    persistCredentials: true
+    fetchDepth: 0
+    displayName: "Checkout repository"
+
+  - task: UseNode@1
+    inputs:
+      version: "22.*"
+    displayName: "Install Node.js"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Installing nwe version of Salesforce CLI..."
+        npm install @salesforce/cli --global
+    displayName: "Install Salesforce CLI"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        # Check if commitHash is empty
+        echo "parameters.CommitHash:  ${{ parameters.CommitHash }}"
+        echo "commitHashParam : $(commitHashParam)"
+        commitHash=$(commitHashParam)
+        echo "commitHash : $(commitHash)"
+        if [ -z "$commitHash" ]; then
+          echo "commitHash is empty. Skipping task. Get commit hash based on branchName"
+          exit 0
+        fi
+
+        git fetch origin  
+        # Log all commits in the branch
+        echo "List of all commits in branch origin/${BUILD_SOURCEBRANCHNAME}:"
+        for commit in $(git log origin/${BUILD_SOURCEBRANCHNAME} --pretty=format:"%H"); do
+          echo "$commit"
+        done
+
+        # Check if the commit exists in the branch
+        if ! git branch -r --contains "$commitHash" | grep -q "origin/${BUILD_SOURCEBRANCHNAME}"; then
+          echo "Commit $commitHash does not exist in the branch ${BUILD_SOURCEBRANCHNAME}."
+          echo "##vso[task.logissue type=error]Commit $commitHash does not exist in branch ${BUILD_SOURCEBRANCHNAME}. Stopping the pipeline."
+          exit 1
+        fi
+        branchName="origin/${BUILD_SOURCEBRANCHNAME}"
+        echo "##vso[task.setvariable variable=commitHash]$commitHash"
+        echo "commitHash: $commitHash ; branchName: $branchName"
+    displayName: "Get commit hash based on branchName"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        commitHash=$(commitHash)
+        echo "commitHash : $(commitHash)"
+        # Check if commitHash is not empty
+        if [ -n "$commitHash" ]; then
+          echo "commitHash is not empty. Skipping task. Get last successful run details."
+          exit 0
+        fi
+
+        urlencode() {
+          local length="${#1}"
+          for (( i = 0; i < length; i++ )); do
+            local c="${1:i:1}"
+            case $c in
+              [a-zA-Z0-9.~_-]) printf "$c" ;;
+              *) printf '%%%02X' "'$c" ;;
+            esac
+          done
+        }
+
+        echo "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"
+        echo "SYSTEM_TEAMPROJECT: $SYSTEM_TEAMPROJECT"
+        echo "BUILD_DEFINITIONID: $BUILD_DEFINITIONID"
+        echo "BUILD_SOURCEBRANCHNAME: $BUILD_SOURCEBRANCHNAME"
+        echo "SYSTEM_ACCESSTOKEN: $SYSTEM_ACCESSTOKEN"
+        echo "SYSTEM_DEFINITIONID: $SYSTEM_DEFINITIONID"
+
+        # Construct the URL for the API request to get pipeline runs
+        url="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/pipelines/$(urlencode "${SYSTEM_DEFINITIONID}")/runs?api-version=7.2-preview.1"
+        echo "URL: $url"
+
+        # Make the API request to get the list of runs
+        response=$(curl -s -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" "$url")
+        echo "$response" | jq ."value""[]"
+
+        # Filter the successful runs and sort them by createdDate in descending order
+        successfulRunIds=$(echo "$response" | jq -r '.value | sort_by(.id) | reverse | .[] | select(.result == "succeeded") | .id')
+
+
+
+        # Loop over each successful run and check the branch
+        for runId in $successfulRunIds; do
+          # Construct the URL to get details of the specific run
+          runUrl="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/pipelines/$(urlencode "${SYSTEM_DEFINITIONID}")/runs/${runId}?api-version=7.2-preview.1"
+          echo "Checking run: $runId with URL: $runUrl"
+
+          # Fetch the run details
+          runData=$(curl -s -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" "$runUrl")
+          echo "$runData" | jq .
+
+          # Extract the branch name and commit hash
+          runBranch=$(echo "$runData" | jq -r '.resources.repositories.self.refName')
+          triggeredCommit=$(echo "$runData" | jq -r '.resources.repositories.self.version')
+
+          echo "Run Branch: $runBranch"
+          echo "Triggered Commit: $triggeredCommit"
+
+          # Check if the run's branch matches the current build branch
+          if [ "$runBranch" == "refs/heads/${BUILD_SOURCEBRANCHNAME}" ]; then
+            echo "Match found: Run $runId matches branch $BUILD_SOURCEBRANCHNAME"
+            echo "Previous successful run is: $runId"
+            echo "This run was triggered by commit: $triggeredCommit"
+
+            # Set the commit hash as a pipeline variable
+            echo "##vso[task.setvariable variable=commitHash]$triggeredCommit"
+
+            # Break the loop after finding the first matching successful run
+            break
+          fi
+        done
+
+        if [ -z "$triggeredCommit" ]; then
+          echo "No successful runs found for branch: $BUILD_SOURCEBRANCHNAME"
+        fi
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    displayName: "Get last successful run details"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "config Salesforce CLI..."
+        sf config set org-metadata-rest-deploy false --global
+    displayName: "Use SOAP API for Deployment"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Installing plugin..."
+        printf "y\n"  | sf plugins install sfdx-git-delta
+    displayName: "Install plugin"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Generating delta..."
+        mkdir -p delta
+        echo "Using commitHash: $(commitHash)"
+        sfdx sgd:source:delta -f $(commitHash) -t origin/$(Build.SourceBranchName) -o ./delta 
+        echo -e " \n"
+        echo -e "delta/package/package.xml \n"
+        cat ./delta/package/package.xml
+        echo -e " \n"
+        echo -e "delta/destructiveChanges/package.xml \n"
+        cat ./delta/destructiveChanges/package.xml
+        echo -e " \n"
+        echo -e "delta/destructiveChanges/destructiveChanges.xml \n"
+        cat ./delta/destructiveChanges/destructiveChanges.xml
+    displayName: "Generate delta"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Generating sf command for running tests..."
+        # Run the Node.js script
+        sfCommandTests=$(node -e "require('./pipelines/GenerateSfdxCommand.js')();") 
+
+        # Set the Azure DevOps pipeline variable
+        echo "##vso[task.setvariable variable=sfCommandTests]$sfCommandTests"
+        echo "sfCommandTests: $sfCommandTests"
+    displayName: "Generate sf command for running tests"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Logging into Salesforce..."
+
+        echo "Getting Salesforce Access Token..."
+        response=$(curl -s -X POST $SF_LOGIN_URL/services/oauth2/token \
+          -d "grant_type=password" \
+          -d "client_id=$(SF_CLIENT_ID)" \
+          -d "client_secret=$(SF_CLIENT_SECRET)" \
+          -d "username=$(SF_USERNAME)" \
+          -d "password=$(SF_PASSWORD)")
+        echo $response | jq .
+        export SF_ACCESS_TOKEN=$(echo $response | jq -r .access_token)
+        export SF_INSTANCE_URL=$(echo $response | jq -r .instance_url)
+        echo "Access Token: $SF_ACCESS_TOKEN"
+        echo "Instance URL: $SF_INSTANCE_URL"
+        SF_INSTANCE_NAME=$(echo $SF_INSTANCE_URL | awk -F[/:] '{print $4}' | cut -d'.' -f1)
+        echo "Extracted instance name: $SF_INSTANCE_NAME"
+
+        sf org login access-token --instance-url $SF_INSTANCE_URL -a $SF_INSTANCE_NAME --no-prompt
+        echo "##vso[task.setvariable variable=SF_INSTANCE_NAME]$SF_INSTANCE_NAME"
+    displayName: "Log in to Salesforce"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Checking to deploy to Salesforce..."
+
+        echo "Searching for the directory containing sfdx-project.json..."
+
+        # Find the directory containing sfdx-project.json
+        sfdx_project_dir=$(find . -name 'sfdx-project.json' -exec dirname {} \; | head -n 1)
+
+        if [ -z "$sfdx_project_dir" ]; then
+          echo "sfdx-project.json not found!"
+          exit 1
+        fi
+
+        echo "Found sfdx-project.json in directory: $sfdx_project_dir"
+
+        # Move to the directory containing sfdx-project.json
+        cd "$sfdx_project_dir"
+
+        sf project deploy start --dry-run -x ./delta/package/package.xml --post-destructive-changes ./delta/destructiveChanges/destructiveChanges.xml $(sfCommandTests) --ignore-warnings --verbose --json --target-org $(SF_INSTANCE_NAME)
+    displayName: "Check to deploy to Salesforce"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Checking to deploy to Salesforce..."
+
+        echo "Searching for the directory containing sfdx-project.json..."
+
+        # Find the directory containing sfdx-project.json
+        sfdx_project_dir=$(find . -name 'sfdx-project.json' -exec dirname {} \; | head -n 1)
+
+        if [ -z "$sfdx_project_dir" ]; then
+          echo "sfdx-project.json not found!"
+          exit 1
+        fi
+
+        echo "Found sfdx-project.json in directory: $sfdx_project_dir"
+
+        # Move to the directory containing sfdx-project.json
+        cd "$sfdx_project_dir"
+
+        sf project deploy start --dry-run -x ./delta/package/package.xml --post-destructive-changes ./delta/destructiveChanges/destructiveChanges.xml --test-level RunLocalTests --ignore-warnings --verbose --json --target-org $(SF_INSTANCE_NAME)
+        deploy_status=$?
+
+        # Check if the deploy command was successful
+        if [ $deploy_status -ne 0 ]; then
+          echo "##vso[task.logissue type=warning]Deployment encountered an issue. Exit status: $deploy_status. Continuing to the next task."
+        fi
+    displayName: "Run all tests"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Deploying to Salesforce..."
+
+        echo "Searching for the directory containing sfdx-project.json..."
+
+        # Find the directory containing sfdx-project.json
+        sfdx_project_dir=$(find . -name 'sfdx-project.json' -exec dirname {} \; | head -n 1)
+
+        if [ -z "$sfdx_project_dir" ]; then
+          echo "sfdx-project.json not found!"
+          exit 1
+        fi
+
+        echo "Found sfdx-project.json in directory: $sfdx_project_dir"
+
+        # Move to the directory containing sfdx-project.json
+        cd "$sfdx_project_dir"
+
+        sf project deploy start -x ./delta/package/package.xml --post-destructive-changes ./delta/destructiveChanges/destructiveChanges.xml $(sfCommandTests) --ignore-warnings --verbose --json --target-org $(SF_INSTANCE_NAME)
+
+    displayName: "Deploy to Salesforce"
+
+
+  
+
+  
+  
+

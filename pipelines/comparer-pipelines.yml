@@ -1,0 +1,577 @@
+trigger: none  # This pipeline will not trigger automatically
+
+pr: none  # This pipeline will not trigger on pull requests
+
+parameters:
+  - name: SourceSystemParam
+    type: string
+    default: 'obsglobal--sfdev'
+    values:
+      - 'SalesforceVariables'
+      - 'obsglobal--sfdev'
+      - 'obsglobal--sftest'
+      - 'obsglobal--sfuat'
+      - 'obsglobal--sfprod'
+  
+  - name: TargetSystemParam
+    type: string
+    default: 'obsglobal--sfdev'
+    values:
+      - 'SalesforceVariables'
+      - 'obsglobal--sfdev'
+      - 'obsglobal--sftest'
+      - 'obsglobal--sfuat'
+      - 'obsglobal--sfprod'
+
+  - name: DeployDelta
+    type: boolean
+    default: false
+    values:
+      - true
+      - false
+
+pool:
+  vmImage: "ubuntu-latest"
+
+variables:
+  - name: sourceSystem
+    value: ${{parameters.SourceSystemParam}}
+  - name: targetSystem
+    value: ${{parameters.TargetSystemParam}}
+  - name: deploy_delta
+    value: ${{parameters.DeployDelta}}
+  - name: system.debug
+    value: true
+
+steps:
+  - checkout: self
+    persistCredentials: true
+    fetchDepth: 0
+    displayName: "Checkout repository"
+
+  - task: UseNode@1
+    inputs:
+      version: "22.x" # Updated to a stable LTS version for Node.js
+    displayName: "Install Node.js"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        # Set local Git user configuration
+        git config user.email "$(Build.RequestedForEmail)"
+        git config user.name "$(Build.RequestedFor)"
+
+        git fetch origin
+
+        newTargetSystemBranchName=$(echo $(Build.SourceBranchName) | sed 's#refs/heads/##')_$(targetSystem)
+        newSourceSystemBranchName=$(echo $(Build.SourceBranchName) | sed 's#refs/heads/##')_$(sourceSystem)
+        newDeltaBranchName=$(echo $(Build.SourceBranchName) | sed 's#refs/heads/##')_Delta_From_$(sourceSystem)_To_$(targetSystem)
+
+        make_empty_branch() {
+          branch_name=$1
+          if git show-ref --quiet refs/heads/$branch_name; then
+            # Checkout the branch if it exists
+            git checkout $branch_name
+          else
+            # Create the branch if it does not exist
+            git checkout --orphan $branch_name
+          fi
+          git rm -rf .
+          echo "New branch created or existing branch emptied" > README.md
+          git add README.md
+          git commit -m "Initial commit on $branch_name"
+          git push origin $branch_name --force
+        }
+
+        # Create or empty newTargetSystemBranchName
+        make_empty_branch $newTargetSystemBranchName
+        echo "##vso[task.setvariable variable=newTargetSystemBranchName]$newTargetSystemBranchName"
+        echo "newTargetSystemBranchName: $newTargetSystemBranchName"
+
+        # Create or empty newSourceSystemBranchName
+        make_empty_branch $newSourceSystemBranchName
+        echo "##vso[task.setvariable variable=newSourceSystemBranchName]$newSourceSystemBranchName"
+        echo "newSourceSystemBranchName: $newSourceSystemBranchName"
+
+        # Create or empty newDeltaBranchName
+        make_empty_branch $newDeltaBranchName
+        echo "##vso[task.setvariable variable=newDeltaBranchName]$newDeltaBranchName"
+        echo "newDeltaBranchName: $newDeltaBranchName"
+
+        # Checkout back to the source branch
+        git checkout $(Build.SourceBranchName)
+    displayName: "Create or empty branches"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Installing nwe version of Salesforce CLI..."
+        npm install @salesforce/cli --global
+    displayName: "Install Salesforce CLI"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        urlencode() {
+          local length="${#1}"
+          for (( i = 0; i < length; i++ )); do
+            local c="${1:i:1}"
+            case $c in
+              [a-zA-Z0-9.~_-]) printf "$c" ;;
+              *) printf '%%%02X' "'$c" ;;
+            esac
+          done
+        }
+
+        echo "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"
+        echo "SYSTEM_TEAMPROJECT: $SYSTEM_TEAMPROJECT"
+        echo "BUILD_DEFINITIONID: $BUILD_DEFINITIONID"
+        echo "BUILD_SOURCEBRANCHNAME: $BUILD_SOURCEBRANCHNAME"
+        echo "SYSTEM_ACCESSTOKEN: $SYSTEM_ACCESSTOKEN"
+        echo "SYSTEM_DEFINITIONID: $SYSTEM_DEFINITIONID"
+        yamlFileName="variables-pipelines.yml"
+
+        apiUrl="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/pipelines?api-version=6.0-preview.1"
+
+        # Get the list of pipelines
+        response=$(curl -s -u :${SYSTEM_ACCESSTOKEN} -X GET ${apiUrl})
+
+        # Extract pipeline IDs
+        pipelineIds=$(echo "$response" | jq -r '.value[].id')
+
+        # Initialize pipelineId variable
+        pipelineId=""
+
+        # Loop through pipeline IDs to find the matching YAML file name
+        for id in $pipelineIds; do
+          detailsUrl="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/pipelines/$id?api-version=6.0-preview.1"
+          detailsResponse=$(curl -s -u :${SYSTEM_ACCESSTOKEN} -X GET ${detailsUrl})
+          pipelineYamlFileName=$(echo "$detailsResponse" | jq -r '.configuration.path')
+          
+          if [[ "$pipelineYamlFileName" == *"$yamlFileName"* ]]; then
+            pipelineId=$id
+            break
+          fi
+        done
+
+        # Output the pipeline ID
+        echo "Pipeline ID: $pipelineId"
+
+        # Check if pipelineId is found
+        if [ -z "$pipelineId" ]; then
+          echo "Pipeline ID not found for YAML file: $yamlFileName"
+          exit 1
+        fi
+        echo "##vso[task.setvariable variable=pipelineId]$pipelineId"
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    displayName: "Get variables-pipelines Id"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        urlencode() {
+          local length="${#1}"
+          for (( i = 0; i < length; i++ )); do
+            local c="${1:i:1}"
+            case $c in
+              [a-zA-Z0-9.~_-]) printf "$c" ;;
+              *) printf '%%%02X' "'$c" ;;
+            esac
+          done
+        }
+        echo "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"
+        echo "SYSTEM_TEAMPROJECT: $SYSTEM_TEAMPROJECT"
+        echo "BUILD_DEFINITIONID: $BUILD_DEFINITIONID"
+        echo "BUILD_SOURCEBRANCHNAME: $BUILD_SOURCEBRANCHNAME"
+        echo "SYSTEM_ACCESSTOKEN: $SYSTEM_ACCESSTOKEN"
+        echo "SYSTEM_DEFINITIONID: $SYSTEM_DEFINITIONID"
+        echo "Pipeline ID: $pipelineId"
+        echo "targetSystem : $(targetSystem)"
+
+        triggerUrl="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/pipelines/$(pipelineId)/runs?api-version=6.0-preview.1"
+        echo "Trigger URL: ${triggerUrl}"
+        refName="refs/heads/$BUILD_SOURCEBRANCHNAME"
+        echo "refName: ${refName}"
+        response=$(curl -s -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" -H "Content-Type: application/json" -d "{
+          \"resources\": {
+            \"repositories\": {
+              \"self\": {
+                \"refName\": \"${refName}\"
+              }
+            }
+          },
+          \"templateParameters\": {
+            \"group\": \"$(targetSystem)\"
+          }
+        }" ${triggerUrl})
+        runId=$(echo "$response" | jq -r '.id')
+        echo "Triggered pipeline run ID: $runId"
+        counter=0
+        max_attempts=15
+        poll_url="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/build/builds/$runId?api-version=6.0"
+        while true; do
+              echo "countern: $counter"
+              response=$(curl -s -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" $poll_url)
+
+              status=$(echo $response | jq -r '.status')
+              echo "Triggered pipeline status: $status"
+              if [ "$status" == "completed" ]; then
+                break
+              fi
+              counter=$(($counter + 1))
+              if [ $counter -ge $max_attempts ]; then
+                echo "Max attempts reached, exiting loop."
+                exit 1  # Exit with a non-zero status code to indicate failure
+              fi
+              echo "Waiting for first pipeline to complete..."
+              sleep 10
+              echo $index
+          done
+        echo "##vso[task.setvariable variable=runId]$runId"  
+        echo "##vso[task.setvariable variable=projectName]$(urlencode "${SYSTEM_TEAMPROJECT}")"
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    displayName: "Run variables-pipelines for target System"
+
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: "specific"
+      project: "$(projectName)"
+      pipeline: "$(pipelineId)"
+      runVersion: "specific"
+      runId: "$(runId)"
+      artifactName: "MyArtifact"
+      targetPath: "$(Pipeline.Workspace)"
+    displayName: "Download Pipeline Artifact for target System"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        cat $(Pipeline.Workspace)/myVar.txt
+        myVar=$(cat $(Pipeline.Workspace)/myVar.txt)
+        echo "Variable from the first pipeline: $myVar"
+        echo "##vso[task.setvariable variable=targetSystemVariables]$myVar"
+    displayName: "Get variables for target System"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        urlencode() {
+          local length="${#1}"
+          for (( i = 0; i < length; i++ )); do
+            local c="${1:i:1}"
+            case $c in
+              [a-zA-Z0-9.~_-]) printf "$c" ;;
+              *) printf '%%%02X' "'$c" ;;
+            esac
+          done
+        }
+        echo "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"
+        echo "SYSTEM_TEAMPROJECT: $SYSTEM_TEAMPROJECT"
+        echo "BUILD_DEFINITIONID: $BUILD_DEFINITIONID"
+        echo "BUILD_SOURCEBRANCHNAME: $BUILD_SOURCEBRANCHNAME"
+        echo "SYSTEM_ACCESSTOKEN: $SYSTEM_ACCESSTOKEN"
+        echo "SYSTEM_DEFINITIONID: $SYSTEM_DEFINITIONID"
+        echo "Pipeline ID: $pipelineId"
+        echo "sourceSystem : $(sourceSystem)"
+
+        triggerUrl="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/pipelines/$(pipelineId)/runs?api-version=6.0-preview.1"
+        echo "Trigger URL: ${triggerUrl}"
+        refName="refs/heads/$BUILD_SOURCEBRANCHNAME"
+        echo "refName: ${refName}"
+        response=$(curl -s -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" -H "Content-Type: application/json" -d "{
+          \"resources\": {
+            \"repositories\": {
+              \"self\": {
+                \"refName\": \"${refName}\"
+              }
+            }
+          },
+          \"templateParameters\": {
+            \"group\": \"$(sourceSystem)\"
+          }
+        }" ${triggerUrl})
+        runId=$(echo "$response" | jq -r '.id')
+        echo "Triggered pipeline run ID: $runId"
+        counter=0
+        max_attempts=15
+        poll_url="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/build/builds/$runId?api-version=6.0"
+        while true; do
+              echo "countern: $counter"
+              response=$(curl -s -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" $poll_url)
+
+              status=$(echo $response | jq -r '.status')
+              echo "Triggered pipeline status: $status"
+              if [ "$status" == "completed" ]; then
+                break
+              fi
+              counter=$(($counter + 1))
+              if [ $counter -ge $max_attempts ]; then
+                echo "Max attempts reached, exiting loop."
+                exit 1  # Exit with a non-zero status code to indicate failure
+              fi
+              echo "Waiting for first pipeline to complete..."
+              sleep 10
+              echo $index
+          done
+        echo "##vso[task.setvariable variable=runSourceId]$runId"  
+        echo "##vso[task.setvariable variable=projectName]$(urlencode "${SYSTEM_TEAMPROJECT}")"
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    displayName: "Run variables-pipelines for source System"
+
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: "specific"
+      project: "$(projectName)"
+      pipeline: "$(pipelineId)"
+      runVersion: "specific"
+      runId: "$(runSourceId)"
+      artifactName: "MyArtifact"
+      targetPath: "$(Pipeline.Workspace)"
+    displayName: "Download Pipeline Artifact for source System"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        cat $(Pipeline.Workspace)/myVar.txt
+        myVar=$(cat $(Pipeline.Workspace)/myVar.txt)
+        echo "Variable from the first pipeline: $myVar"
+
+        echo "##vso[task.setvariable variable=sourceSystemVariables]$myVar"
+    displayName: "Get variables for source System"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+
+        set_variables_from_string() {
+          local input_string=$1
+          input_string=$(echo $input_string | sed 's/[{}]//g')
+          IFS=',' read -ra pairs <<< "$input_string"
+          for pair in "${pairs[@]}"; do
+            key=$(echo $pair | cut -d: -f1 | xargs)
+            value=$(echo $pair | cut -d: -f2- | xargs)
+            export $key="$value"
+            echo "##vso[task.setvariable variable=${key}]${value}"
+          done
+        }
+
+        echo "Logging into Salesforce..."
+        set_variables_from_string "$(sourceSystemVariables)"
+
+        echo "SF_CLIENT_ID: $SF_CLIENT_ID"
+        echo "SF_CLIENT_SECRET: $SF_CLIENT_SECRET"
+        echo "SF_USERNAME: $SF_USERNAME"
+        echo "SF_PASSWORD: $SF_PASSWORD"
+        echo "SF_LOGIN_URL: $SF_LOGIN_URL"
+
+        echo "Getting Salesforce Access Token..."
+        response=$(curl -s -X POST $SF_LOGIN_URL/services/oauth2/token \
+          -d "grant_type=password" \
+          -d "client_id=$SF_CLIENT_ID" \
+          -d "client_secret=$SF_CLIENT_SECRET" \
+          -d "username=$SF_USERNAME" \
+          -d "password=$SF_PASSWORD")
+        echo $response | jq .
+        export SF_ACCESS_TOKEN=$(echo $response | jq -r .access_token)
+        export SF_INSTANCE_URL=$(echo $response | jq -r .instance_url)
+        echo "Access Token: $SF_ACCESS_TOKEN"
+        echo "Instance URL: $SF_INSTANCE_URL"
+        SF_INSTANCE_NAME=$(echo $SF_INSTANCE_URL | awk -F[/:] '{print $4}' | cut -d'.' -f1)
+        echo "Extracted instance name: $SF_INSTANCE_NAME"
+
+        sf force:auth:accesstoken:store --instance-url $SF_INSTANCE_URL -a $SF_INSTANCE_NAME --no-prompt
+        echo "##vso[task.setvariable variable=SF_INSTANCE_SOURCE_NAME]$SF_INSTANCE_NAME"
+    displayName: "Log in to Source Salesforce"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Checking to deploy to Salesforce..."
+        echo "newSourceSystemBranchName: $(newSourceSystemBranchName)"
+        # Set local Git user configuration
+        # git config user.email "$(Build.RequestedForEmail)"
+        # git config user.name "$(Build.RequestedFor)"
+
+        git fetch origin
+        package_xml=$(cat ./pipelines/package.xml)
+        git checkout $(newSourceSystemBranchName)
+        git pull --rebase origin $(newSourceSystemBranchName)
+        echo "Creating SFDX project..."
+        sf project generate -n sfdx-backup-project
+        cd sfdx-backup-project
+
+        echo "Setting up package.xml..."
+        mkdir -p manifest
+        echo "$package_xml" > manifest/package.xml
+
+        cat manifest/package.xml
+        echo "Retrieving metadata..."
+        sf project retrieve start -x manifest/package.xml --json --target-org $(SF_INSTANCE_SOURCE_NAME)
+        echo "Preparing for commit..."
+        cd ..
+        git add .
+        git commit -m "Retrieved metadata from Salesforce"
+        git push origin $(newSourceSystemBranchName)
+        git checkout $(Build.SourceBranchName)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+    displayName: "Get curresnt state from Source Salesforce"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+
+        set_variables_from_string() {
+          local input_string=$1
+          input_string=$(echo $input_string | sed 's/[{}]//g')
+          IFS=',' read -ra pairs <<< "$input_string"
+          for pair in "${pairs[@]}"; do
+            key=$(echo $pair | cut -d: -f1 | xargs)
+            value=$(echo $pair | cut -d: -f2- | xargs)
+            export $key="$value"
+            echo "##vso[task.setvariable variable=${key}]${value}"
+          done
+        }
+
+        echo "Logging into Salesforce..."
+        set_variables_from_string "$(targetSystemVariables)"
+
+        echo "SF_CLIENT_ID: $SF_CLIENT_ID"
+        echo "SF_CLIENT_SECRET: $SF_CLIENT_SECRET"
+        echo "SF_USERNAME: $SF_USERNAME"
+        echo "SF_PASSWORD: $SF_PASSWORD"
+        echo "SF_LOGIN_URL: $SF_LOGIN_URL"
+
+        echo "Getting Salesforce Access Token..."
+        response=$(curl -s -X POST $SF_LOGIN_URL/services/oauth2/token \
+          -d "grant_type=password" \
+          -d "client_id=$SF_CLIENT_ID" \
+          -d "client_secret=$SF_CLIENT_SECRET" \
+          -d "username=$SF_USERNAME" \
+          -d "password=$SF_PASSWORD")
+        echo $response | jq .
+        export SF_ACCESS_TOKEN=$(echo $response | jq -r .access_token)
+        export SF_INSTANCE_URL=$(echo $response | jq -r .instance_url)
+        echo "Access Token: $SF_ACCESS_TOKEN"
+        echo "Instance URL: $SF_INSTANCE_URL"
+        SF_INSTANCE_NAME=$(echo $SF_INSTANCE_URL | awk -F[/:] '{print $4}' | cut -d'.' -f1)
+        echo "Extracted instance name: $SF_INSTANCE_NAME"
+
+        sf force:auth:accesstoken:store --instance-url $SF_INSTANCE_URL -a $SF_INSTANCE_NAME --no-prompt
+        echo "##vso[task.setvariable variable=SF_INSTANCE_TARGET_NAME]$SF_INSTANCE_NAME"
+    displayName: "Log in to Target Salesforce"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Geting curresnt state from Target Salesforce..."
+        echo "newTargetSystemBranchName: $(newTargetSystemBranchName)"
+
+        git fetch origin
+        package_xml=$(cat ./pipelines/package.xml)
+        git checkout $(newTargetSystemBranchName)
+        git pull --rebase origin $(newTargetSystemBranchName)
+        echo "Creating SFDX project..."
+        sf project generate -n sfdx-backup-project
+        cd sfdx-backup-project
+
+        echo "Setting up package.xml..."
+        mkdir -p manifest
+        echo "$package_xml" > manifest/package.xml
+
+        cat manifest/package.xml
+        echo "Retrieving metadata..."
+        sf project retrieve start -x manifest/package.xml --json --target-org $(SF_INSTANCE_TARGET_NAME)
+        echo "Preparing for commit..."
+        cd ..
+        git add .
+        git commit -m "Retrieved metadata from Salesforce"
+        git push origin $(newTargetSystemBranchName)
+        git checkout $(Build.SourceBranchName)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+    displayName: "Get curresnt state from Target Salesforce"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Installing plugin..."
+        printf "y\n"  | sf plugins install sfdx-git-delta
+    displayName: "Install plugin"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Generating delta..."
+        mkdir -p delta
+        cd ./delta
+
+        echo "Creating SFDX project..."
+        sf project generate -n sfdx-backup-project
+        cd ..
+        sfdx sgd:source:delta --to origin/$(newTargetSystemBranchName) --from origin/$(newSourceSystemBranchName) -o ./delta/ --generate-delta --loglevel=trace
+        cp 
+
+        # Navigate into the delta directory and add its contents
+        git fetch origin
+        if git show-ref --quiet refs/heads/$(newDeltaBranchName); then
+            # Checkout the branch if it exists
+            git checkout $(newDeltaBranchName)
+        else
+            # Create the branch if it does not exist
+            git checkout --orphan $(newDeltaBranchName)
+        fi
+          git rm -rf .
+
+          # Add all the copied files to the staging area
+          git add .
+          git commit -m "Delta commit on $(newDeltaBranchName)"
+          git push origin $(newDeltaBranchName) --force
+        git checkout $(Build.SourceBranchName)
+    displayName: "Generate delta"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Checking to deploy to Salesforce..."
+        git checkout $(newDeltaBranchName)
+
+        cd ./delta/sfdx-backup-project
+        sf project deploy start --dry-run -x ../package/package.xml --ignore-warnings --verbose --json --target-org $(SF_INSTANCE_TARGET_NAME)
+    displayName: "Check to deploy to Salesforce"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Deploy to Salesforce..."
+        git checkout $(newDeltaBranchName)
+
+        cd ./delta/sfdx-backup-project
+        echo "DeployDelta:  ${{ parameters.DeployDelta }}"
+        if [ ${{ parameters.DeployDelta }} = True ]; then
+          echo "DeployDelta is true"
+          sf project deploy start -x ../package/package.xml --ignore-warnings --verbose --json --target-org $(SF_INSTANCE_TARGET_NAME)
+        else
+          echo "DeployDelta is false"
+        fi
+    displayName: "Deploy to Salesforce"
