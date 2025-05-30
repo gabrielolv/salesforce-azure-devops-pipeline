@@ -134,7 +134,7 @@ stages:
             sf_client_secret: $(SF_CLIENT_SECRET)
             sf_login_url: $(SF_LOGIN_URL)
 
-        - template: templates/sf-check-deploy.yml
+        - template: templates/sf-deploy.yml
 
 # ─────────────── PRODUCTION DEPLOYMENT ───────────────
 - stage: DeployToProd
@@ -176,4 +176,4 @@ stages:
             sf_client_secret: $(SF_CLIENT_SECRET)
             sf_login_url: $(SF_LOGIN_URL)
 
-        - template: templates/sf-check-deploy.yml
+        - template: templates/sf-deploy.yml
