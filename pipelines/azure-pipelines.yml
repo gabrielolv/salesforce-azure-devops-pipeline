@@ -12,10 +12,10 @@ parameters:
 stages:
 # ─────────────── BUILD & VALIDATION ─────────────── 
 - stage: BuildAndValidate
-  displayName: "Build & Pre-Deploy Validation"
+  displayName: "Build and Pre-Deployment Validation"
   jobs:
-  - job: DeployToSalesforce
-    displayName: "Deploy to Non-Prod Orgs"
+  - job: BuildAndValidateJob
+    displayName: "Build and Validate Job"
     condition: always()
     pool:
       vmImage: 'ubuntu-latest'
@@ -89,44 +89,23 @@ stages:
           runAllTests: true
           displayName: "Run all tests"
 
-      - task: Bash@3
-        condition: and(succeeded(), ne(variables['Build.SourceBranchName'], 'main'))
-        inputs:
-          targetType: "inline"
-          script: |
-            echo "Deploying to Salesforce..."
-
-            echo "Searching for the directory containing sfdx-project.json..."
-
-            # Find the directory containing sfdx-project.json
-            sfdx_project_dir=$(find . -name 'sfdx-project.json' -exec dirname {} \; | head -n 1)
-
-            if [ -z "$sfdx_project_dir" ]; then
-              echo "sfdx-project.json not found!"
-              exit 1
-            fi
-
-            echo "Found sfdx-project.json in directory: $sfdx_project_dir"
-
-            # Move to the directory containing sfdx-project.json
-            cd "$sfdx_project_dir"
-
-            sf project deploy start -x ./delta/package/package.xml --post-destructive-changes ./delta/destructiveChanges/destructiveChanges.xml --test-level RunLocalTests --verbose --json --target-org $(SF_INSTANCE_NAME)
-
-        displayName: "Deploy to Salesforce"
-
-# ─────────────── PRODUCTION DEPLOYMENT ───────────────
-- stage: DeployToProd
-  displayName: "Deploy to Salesforce PROD"
+# ─────────────── NON-PRODUCTION DEPLOYMENT ───────────────
+- stage: DeployToNonProd
+  displayName: "non-Prod Deployment"
   dependsOn: BuildAndValidate
-  condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'main'))
+  condition: and(succeeded(), ne(variables['Build.SourceBranchName'], 'main'))
 
   variables:
-    - group: obsglobal--sfprod  # Approval is only required for this group
+      - ${{ if eq(variables['Build.SourceBranchName'], 'develop') }}:
+            - group: obsglobal--sfdev
+      - ${{ if eq(variables['Build.SourceBranchName'], 'test') }}:
+            - group: obsglobal--sftest
+      - ${{ if eq(variables['Build.SourceBranchName'], 'uat') }}:
+            - group: obsglobal--sfuat
 
   jobs:
-    - job: DeployToProdJob
-      displayName: "Deploy to PROD"
+    - job: DeployToNonProdJob
+      displayName: "Deploy to Non-Prod Org"
       pool:
         vmImage: 'ubuntu-latest'
 
@@ -155,12 +134,46 @@ stages:
             sf_client_secret: $(SF_CLIENT_SECRET)
             sf_login_url: $(SF_LOGIN_URL)
 
-        - task: Bash@3
-          inputs:
-            targetType: "inline"
-            script: |
-              echo "Deploying to PROD..."
-              sfdx_project_dir=$(find . -name 'sfdx-project.json' -exec dirname {} \; | head -n 1)
-              cd "$sfdx_project_dir"
-              sf project deploy start -x ./delta/package/package.xml --post-destructive-changes ./delta/destructiveChanges/destructiveChanges.xml --test-level RunLocalTests --verbose --json --target-org $(SF_INSTANCE_NAME)
-          displayName: "Deploy to Salesforce PROD"
+        - template: templates/sf-check-deploy.yml
+
+# ─────────────── PRODUCTION DEPLOYMENT ───────────────
+- stage: DeployToProd
+  displayName: "Production Deployment"
+  dependsOn: BuildAndValidate
+  condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'main'))
+
+  variables:
+    - group: obsglobal--sfprod  # Approval is only required for this group
+
+  jobs:
+    - job: DeployToProdJob
+      displayName: "Deploy to Production"
+      pool:
+        vmImage: 'ubuntu-latest'
+
+      steps:
+        - checkout: self
+          persistCredentials: true
+          fetchDepth: 0
+
+        - template: templates/install-sf-cli.yml
+
+        - template: templates/get-last-successful-commit.yml
+          parameters:
+            commitHashVariable: $(commitHash)
+
+        - template: templates/install-plugin.yml
+
+        - template: templates/generate-delta.yml
+          parameters:
+            commit_hash: $(commitHash)
+
+        - template: templates/sf-login.yml
+          parameters:
+            sf_username: $(SF_USERNAME)
+            sf_password: $(SF_PASSWORD)
+            sf_client_id: $(SF_CLIENT_ID)
+            sf_client_secret: $(SF_CLIENT_SECRET)
+            sf_login_url: $(SF_LOGIN_URL)
+
+        - template: templates/sf-check-deploy.yml
