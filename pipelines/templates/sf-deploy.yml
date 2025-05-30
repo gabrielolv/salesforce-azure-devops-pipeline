@@ -1,0 +1,18 @@
+#templates/sf-deploy.yml
+- task: Bash@3
+  displayName: "Deploy to Salesforce"
+  inputs:
+    targetType: "inline"
+    script: |
+      echo "Deploying to Salesforce..."
+      sfdx_project_dir=$(find . -name 'sfdx-project.json' -exec dirname {} \; | head -n 1)
+
+      if [ -z "$sfdx_project_dir" ]; then
+        echo "sfdx-project.json not found!"
+        exit 1
+      fi
+
+      echo "Found sfdx-project.json in directory: $sfdx_project_dir"
+
+      cd "$sfdx_project_dir"
+      sf project deploy start -x ./delta/package/package.xml --post-destructive-changes ./delta/destructiveChanges/destructiveChanges.xml --test-level RunLocalTests --verbose --json --target-org $(SF_INSTANCE_NAME)
