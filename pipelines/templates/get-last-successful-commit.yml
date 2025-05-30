@@ -1,0 +1,82 @@
+# templates/get-last-successful-commit.yml
+parameters:
+  commitHashVariable: ''
+
+steps:
+  - task: Bash@3
+    displayName: "Get last successful run details"
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    inputs:
+      targetType: "inline"
+      script: |
+        commitHash=$(${parameters.commitHashVariable})
+        echo "commitHash : $(commitHash)"
+          # Check if commitHash is not empty
+          if [ -n "$commitHash" ]; then
+            echo "commitHash is not empty. Skipping task. Get last successful run details."
+            exit 0
+          fi
+
+          urlencode() {
+            local length="${#1}"
+            for (( i = 0; i < length; i++ )); do
+              local c="${1:i:1}"
+              case $c in
+                [a-zA-Z0-9.~_-]) printf "$c" ;;
+                *) printf '%%%02X' "'$c" ;;
+              esac
+            done
+          }
+
+          echo "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"
+          echo "SYSTEM_TEAMPROJECT: $SYSTEM_TEAMPROJECT"
+          echo "BUILD_DEFINITIONID: $BUILD_DEFINITIONID"
+          echo "BUILD_SOURCEBRANCHNAME: $BUILD_SOURCEBRANCHNAME"
+          echo "SYSTEM_ACCESSTOKEN: $SYSTEM_ACCESSTOKEN"
+          echo "SYSTEM_DEFINITIONID: $SYSTEM_DEFINITIONID"
+
+          # Construct the URL for the API request to get pipeline runs
+          url="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/pipelines/$(urlencode "${SYSTEM_DEFINITIONID}")/runs?api-version=7.2-preview.1"
+          echo "URL: $url"
+
+          # Make the API request to get the list of runs
+          response=$(curl -s -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" "$url")
+          echo "$response" | jq ."value""[]"
+
+          # Filter the successful runs and sort them by createdDate in descending order
+          successfulRunIds=$(echo "$response" | jq -r '.value | sort_by(.id) | reverse | .[] | select(.result == "succeeded") | .id')
+          
+          # Loop over each successful run and check the branch
+          for runId in $successfulRunIds; do
+            # Construct the URL to get details of the specific run
+            runUrl="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}$(urlencode "${SYSTEM_TEAMPROJECT}")/_apis/pipelines/$(urlencode "${SYSTEM_DEFINITIONID}")/runs/${runId}?api-version=7.2-preview.1"
+            echo "Checking run: $runId with URL: $runUrl"
+            
+            # Fetch the run details
+            runData=$(curl -s -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" "$runUrl")
+            echo "$runData" | jq .
+           
+            # Extract the branch name and commit hash
+            runBranch=$(echo "$runData" | jq -r '.resources.repositories.self.refName')
+            triggeredCommit=$(echo "$runData" | jq -r '.resources.repositories.self.version')
+            echo "Run Branch: $runBranch"
+            echo "Triggered Commit: $triggeredCommit"
+            
+            # Check if the run's branch matches the current build branch
+            if [ "$runBranch" == "refs/heads/${BUILD_SOURCEBRANCHNAME}" ]; then
+              echo "Match found: Run $runId matches branch $BUILD_SOURCEBRANCHNAME"
+              echo "Previous successful run is: $runId"
+              echo "This run was triggered by commit: $triggeredCommit"
+              
+              # Set the commit hash as a pipeline variable
+              echo "##vso[task.setvariable variable=commitHash]$triggeredCommit"
+              
+              # Break the loop after finding the first matching successful run
+              break
+            fi
+          done
+
+          if [ -z "$triggeredCommit" ]; then
+            echo "No successful runs found for branch: $BUILD_SOURCEBRANCHNAME"
+          fi

@@ -1,0 +1,34 @@
+# templates/get-commit-hash.yml
+parameters:
+  commitHashParam: ''
+
+steps:
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "parameters.CommitHash:  ${{ parameters.commitHashParam }}"
+        commitHash="${{ parameters.commitHashParam }}"
+        echo "commitHashParam : $commitHash"
+
+        if [ -z "$commitHash" ]; then
+          echo "commitHash is empty. Skipping task. Get commit hash based on branchName"
+          exit 0
+        fi
+
+        git fetch origin  
+        echo "List of all commits in branch origin/${BUILD_SOURCEBRANCHNAME}:"
+        for commit in $(git log origin/${BUILD_SOURCEBRANCHNAME} --pretty=format:"%H"); do
+          echo "$commit"
+        done
+
+        if ! git branch -r --contains "$commitHash" | grep -q "origin/${BUILD_SOURCEBRANCHNAME}"; then
+          echo "Commit $commitHash does not exist in the branch ${BUILD_SOURCEBRANCHNAME}."
+          echo "##vso[task.logissue type=error]Commit $commitHash does not exist in branch ${BUILD_SOURCEBRANCHNAME}. Stopping the pipeline."
+          exit 1
+        fi
+
+        branchName="origin/${BUILD_SOURCEBRANCHNAME}"
+        echo "##vso[task.setvariable variable=commitHash]$commitHash"
+        echo "commitHash: $commitHash ; branchName: $branchName"
+    displayName: "Get commit hash based on branchName"

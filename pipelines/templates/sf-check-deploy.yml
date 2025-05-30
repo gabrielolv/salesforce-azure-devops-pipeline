@@ -1,0 +1,49 @@
+# templates/sf-check-deploy.yml
+parameters:
+  runAllTests: false
+  includeSfCommandTests: false
+  displayName: "Check to deploy to Salesforce"
+
+steps:
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "${{ parameters.displayName }}..."
+
+        echo "Searching for the directory containing sfdx-project.json..."
+
+        # Find the directory containing sfdx-project.json
+        sfdx_project_dir=$(find . -name 'sfdx-project.json' -exec dirname {} \; | head -n 1)
+
+        if [ -z "$sfdx_project_dir" ]; then
+          echo "sfdx-project.json not found!"
+          exit 1
+        fi
+
+        echo "Found sfdx-project.json in directory: $sfdx_project_dir"
+
+        # Move to the directory containing sfdx-project.json
+        cd "$sfdx_project_dir"
+
+        # Build the deploy command
+        cmd="sf project deploy start --dry-run -x ./delta/package/package.xml --post-destructive-changes ./delta/destructiveChanges/destructiveChanges.xml"
+
+        if [[ "${{ parameters.includeSfCommandTests }}" == "true" ]]; then
+          cmd="$cmd $(sfCommandTests)"
+        fi
+
+        if [[ "${{ parameters.runAllTests }}" == "true" ]]; then
+          cmd="$cmd --test-level RunLocalTests"
+        fi
+
+        cmd="$cmd --verbose --json --target-org $(SF_INSTANCE_NAME)"
+
+        echo "Executing: $cmd"
+        eval $cmd
+        deploy_status=$?
+
+        if [[ "${{ parameters.runAllTests }}" == "true" && $deploy_status -ne 0 ]]; then
+          echo "##vso[task.logissue type=warning]Deployment encountered an issue. Exit status: $deploy_status. Continuing to the next task."
+        fi
+    displayName: ${{ parameters.displayName }}

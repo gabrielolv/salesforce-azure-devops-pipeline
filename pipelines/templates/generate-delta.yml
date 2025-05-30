@@ -1,0 +1,31 @@
+# File: templates/generate-delta.yml
+parameters:
+  commit_hash: ''
+
+steps:
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Generating delta..."
+
+        mkdir -p delta
+        echo "Using commitHash: ${{ parameters.commit_hash }}"
+
+        # Use env var for branch name
+        echo "Generating delta from ${{ parameters.commit_hash }} to origin/$BUILD_SOURCEBRANCHNAME"
+        sfdx sgd:source:delta -f ${{ parameters.commit_hash }} -t origin/$BUILD_SOURCEBRANCHNAME -o ./delta
+
+        echo -e " \n"
+        echo -e "delta/package/package.xml \n"
+        cat ./delta/package/package.xml
+        echo -e " \n"
+        echo -e "delta/destructiveChanges/package.xml \n"
+        cat ./delta/destructiveChanges/package.xml
+        echo -e " \n"
+        echo -e "delta/destructiveChanges/destructiveChanges.xml \n"
+        cat ./delta/destructiveChanges/destructiveChanges.xml
+    displayName: "Generate delta"
+
+
+    

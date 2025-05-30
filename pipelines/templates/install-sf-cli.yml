@@ -1,0 +1,14 @@
+# templates/install-sf-cli.yml
+steps:
+  - task: UseNode@1
+    inputs:
+      version: "22.*"
+    displayName: "Install Node.js"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Installing new version of Salesforce CLI..."
+        npm install @salesforce/cli --global
+    displayName: "Install Salesforce CLI"

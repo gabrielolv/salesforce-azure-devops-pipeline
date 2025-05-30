@@ -1,0 +1,17 @@
+#templates/install-plugin.yml
+steps:
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Configuring Salesforce CLI to use SOAP API for deployment..."
+        sf config set org-metadata-rest-deploy false --global
+    displayName: "Use SOAP API for Deployment"
+
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Installing sfdx-git-delta plugin..."
+        printf "y\n" | sf plugins install sfdx-git-delta
+    displayName: "Install sfdx-git-delta Plugin"
