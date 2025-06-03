@@ -5,13 +5,13 @@ pr: none  # This pipeline will not trigger on pull requests
 parameters:
   - name: group
     type: string
-    default: 'obsglobal--sfdev'
+    default: 'sfdev'
     values:
       - 'SalesforceVariables'
-      - 'obsglobal--sfdev'
-      - 'obsglobal--sftest'
-      - 'obsglobal--sfuat'
-      - 'obsglobal--sfprod'
+      - 'sfdev'
+      - 'sftest'
+      - 'sfuat'
+      - 'sfprod'
 
 pool:
   vmImage: "ubuntu-latest"
