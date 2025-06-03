@@ -8,20 +8,20 @@ parameters:
     default: 'obsglobal--sfdev'
     values:
       - 'SalesforceVariables'
-      - 'obsglobal--sfdev'
-      - 'obsglobal--sftest'
-      - 'obsglobal--sfuat'
-      - 'obsglobal--sfprod'
+      - 'sfdev'
+      - 'sftest'
+      - 'sfuat'
+      - 'sfprod'
   
   - name: TargetSystemParam
     type: string
     default: 'obsglobal--sfdev'
     values:
       - 'SalesforceVariables'
-      - 'obsglobal--sfdev'
-      - 'obsglobal--sftest'
-      - 'obsglobal--sfuat'
-      - 'obsglobal--sfprod'
+      - 'sfdev'
+      - 'sftest'
+      - 'sfuat'
+      - 'sfprod'
 
   - name: DeployDelta
     type: boolean
