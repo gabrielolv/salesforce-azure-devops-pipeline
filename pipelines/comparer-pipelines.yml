@@ -5,7 +5,7 @@ pr: none  # This pipeline will not trigger on pull requests
 parameters:
   - name: SourceSystemParam
     type: string
-    default: 'obsglobal--sfdev'
+    default: 'sfdev'
     values:
       - 'SalesforceVariables'
       - 'sfdev'
@@ -15,7 +15,7 @@ parameters:
   
   - name: TargetSystemParam
     type: string
-    default: 'obsglobal--sfdev'
+    default: 'sfdev'
     values:
       - 'SalesforceVariables'
       - 'sfdev'
