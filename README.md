@@ -90,7 +90,7 @@ These groups are:
 * `sftest`
 * `sfuat`
 * `sfprod`
-* * `sfprod-predeployment`
+* `sfprod-predeployment`
 
 ---
 
