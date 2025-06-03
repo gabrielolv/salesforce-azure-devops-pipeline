@@ -2,6 +2,8 @@
 
 This repository provides a set of Azure DevOps pipelines to manage Salesforce metadata deployments through delta generation, environment-specific configurations, and test execution automation.
 
+![Salesforce CICD Pipeline drawio](https://github.com/user-attachments/assets/f3aff19c-0f49-43ac-a629-86bf112afeb3)
+
 ## Overview
 
 This pipeline architecture allows you to:
@@ -84,10 +86,11 @@ Each Salesforce environment must have a variable group in Azure DevOps with the 
 
 These groups are:
 
-* `obsglobal--sfdev`
-* `obsglobal--sftest`
-* `obsglobal--sfuat`
-* `obsglobal--sfprod`
+* `sfdev`
+* `sftest`
+* `sfuat`
+* `sfprod`
+* * `sfprod-predeployment`
 
 ---
 
