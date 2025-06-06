@@ -17,10 +17,20 @@ steps:
           -d "client_secret=${{ parameters.sf_client_secret }}" \
           -d "username=${{ parameters.sf_username }}" \
           -d "password=${{ parameters.sf_password }}")
+
         echo $response | jq .
+
         export SF_ACCESS_TOKEN=$(echo $response | jq -r .access_token)
         export SF_INSTANCE_URL=$(echo $response | jq -r .instance_url)
+
+        if [[ -z "$SF_ACCESS_TOKEN" || "$SF_ACCESS_TOKEN" == "null" ]]; then
+          echo "Error: Failed to retrieve access token."
+          exit 1
+        fi
+
         SF_INSTANCE_NAME=$(echo $SF_INSTANCE_URL | awk -F[/:] '{print $4}' | cut -d'.' -f1)
+        
         sf org login access-token --instance-url $SF_INSTANCE_URL -a $SF_INSTANCE_NAME --no-prompt
+        
         echo "##vso[task.setvariable variable=SF_INSTANCE_NAME]$SF_INSTANCE_NAME"
     displayName: "Login to Salesforce"
