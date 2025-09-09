@@ -1,0 +1,28 @@
+# templates/run-scripts.yml
+parameters:
+  folder: ''
+  displayName: ''
+
+steps:
+  - task: Bash@3
+    displayName: ${{ parameters.displayName }}
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Running scripts from folder: ${{ parameters.folder }}"
+
+        if [ ! -d "${{ parameters.folder }}" ]; then
+          echo "No scripts found in ${{ parameters.folder }}"
+          exit 0
+        fi
+
+        for script in $(ls ${{ parameters.folder }}/*.apex 2>/dev/null); do
+          echo "Executing $script..."
+          sf apex run --target-org $(SF_INSTANCE_NAME) --file "$script" --json --wait 10
+          status=$?
+          if [ $status -ne 0 ]; then
+            echo "Failed executing $script"
+            echo "##vso[task.logissue type=error]Failed executing $script"
+            exit $status
+          fi
+        done
