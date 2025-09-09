@@ -106,11 +106,11 @@ stages:
 
   variables:
       - ${{ if eq(variables['Build.SourceBranchName'], 'develop') }}:
-            - group: obsglobal--sfdev
+            - group: sfdev
       - ${{ if eq(variables['Build.SourceBranchName'], 'test') }}:
-            - group: obsglobal--sftest
+            - group: sftest
       - ${{ if eq(variables['Build.SourceBranchName'], 'uat') }}:
-            - group: obsglobal--sfuat
+            - group: sfuat
 
   jobs:
     - job: DeployToNonProdJob
@@ -170,7 +170,7 @@ stages:
   condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'main'))
 
   variables:
-    - group: obsglobal--sfprod  # Approval is only required for this group
+    - group: sfprod  # Approval is only required for this group
 
   jobs:
     - job: DeployToProdJob
