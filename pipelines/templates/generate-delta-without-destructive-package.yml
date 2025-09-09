@@ -1,0 +1,31 @@
+# File: templates/generate-detal-without-destructive-package.yml
+parameters:
+  commit_hash: ''
+
+steps:
+  - task: Bash@3
+    inputs:
+      targetType: "inline"
+      script: |
+        echo "Generating delta..."
+
+        mkdir -p delta
+        echo "Using commitHash: ${{ parameters.commit_hash }}"
+
+        # Generate delta (output to ./delta)
+        echo "Generating delta from ${{ parameters.commit_hash }} to origin/$BUILD_SOURCEBRANCHNAME"
+        sfdx sgd:source:delta -f ${{ parameters.commit_hash }} -t origin/$BUILD_SOURCEBRANCHNAME -o ./delta
+
+        # Omit destructive package if present
+        if [ -d "./delta/destructiveChanges" ]; then
+          echo "Removing destructiveChanges package (omitted as requested)"
+          rm -rf ./delta/destructiveChanges
+        fi
+
+        echo -e "\n./delta/package/package.xml\n"
+        if [ -f "./delta/package/package.xml" ]; then
+          cat ./delta/package/package.xml
+        else
+          echo "No package.xml found"
+        fi
+    displayName: "Generate delta"
