@@ -1,0 +1,138 @@
+trigger:
+  - qa
+
+parameters:
+  - name: CommitHash
+    type: string
+    default: ''
+
+stages:
+# ─────────────── BUILD & VALIDATION ─────────────── 
+- stage: BuildAndValidate
+  displayName: "Build and Pre-Deployment Validation"
+  jobs:
+  - job: BuildAndValidateJob
+    displayName: "Build and Validate Job"
+    condition: always()
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    variables:
+      - ${{ if eq(variables['Build.SourceBranchName'], 'qa') }}:
+            - group: sfqa
+            
+      - name: system.debug
+        value: true
+
+      - name: commitHashParam
+        value: ${{parameters.CommitHash}}
+
+    steps:
+      - checkout: self
+        persistCredentials: true
+        fetchDepth: 0
+        displayName: "Checkout repository"
+
+      # Install Salesforce CLI
+      - template: templates/install-sf-cli.yml
+
+      # Get the commit hash from parameters or use the latest commit
+      - template: templates/get-commit-hash.yml
+        parameters:
+          commitHashParam: $(commitHashParam)
+
+      # Get the last successful commit
+      - template: templates/get-last-successful-commit.yml
+        parameters:
+          commitHashVariable: $(commitHash)
+
+      # Install necessary plugins
+      - template: templates/install-plugin.yml
+
+      # Generate the delta package based on the last successful commit
+      - template: templates/generate-delta.yml
+        parameters:
+          commit_hash: $(commitHash)   
+
+      # Generate the sf command for running tests
+      - task: Bash@3
+        inputs:
+          targetType: "inline"
+          script: |
+            echo "Generating sf command for running tests..."
+            # Run the Node.js script
+            sfCommandTests=$(node -e "require('./pipelines/GenerateSfdxCommand.js')();") 
+
+            # Set the Azure DevOps pipeline variable
+            echo "##vso[task.setvariable variable=sfCommandTests]$sfCommandTests"
+            echo "sfCommandTests: $sfCommandTests"
+        displayName: "Generate sf command for running tests"
+
+      # Salesforce login
+      - template: templates/sf-login.yml
+        parameters:
+          sf_username: $(SF_USERNAME)
+          sf_password: $(SF_PASSWORD)
+          sf_client_id: $(SF_CLIENT_ID)
+          sf_client_secret: $(SF_CLIENT_SECRET)
+          sf_login_url: $(SF_LOGIN_URL)
+
+      # Check deployment to Salesforce including running specific tests
+      - template: templates/sf-check-deploy.yml
+        parameters:
+          includeSfCommandTests: true
+          displayName: "Check to deploy to Salesforce"
+
+      # Run all tests to validate the deployment
+      - template: templates/sf-check-deploy.yml
+        parameters:
+          runAllTests: true
+          displayName: "Run all tests"
+
+# ─────────────── SALESFORCE DEPLOYMENT ───────────────
+- stage: DeployToSalesforce
+  displayName: "Salesforce Deployment"
+  dependsOn: BuildAndValidate
+  condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'qa'))
+
+  variables:
+    - group: sfqa
+
+  jobs:
+    - job: DeployToSalesforceJob
+      displayName: "Deploy to Salesforce"
+      pool:
+        vmImage: 'ubuntu-latest'
+
+      steps:
+        - checkout: self
+          persistCredentials: true
+          fetchDepth: 0
+
+        # Install Salesforce CLI
+        - template: templates/install-sf-cli.yml
+
+        # Get the last successful commit
+        - template: templates/get-last-successful-commit.yml
+          parameters:
+            commitHashVariable: $(commitHash)
+
+        # Install necessary plugins
+        - template: templates/install-plugin.yml
+
+        # Generate the delta package based on the last successful commit
+        - template: templates/generate-delta.yml
+          parameters:
+            commit_hash: $(commitHash)
+
+        # Salesforce login
+        - template: templates/sf-login.yml
+          parameters:
+            sf_username: $(SF_USERNAME)
+            sf_password: $(SF_PASSWORD)
+            sf_client_id: $(SF_CLIENT_ID)
+            sf_client_secret: $(SF_CLIENT_SECRET)
+            sf_login_url: $(SF_LOGIN_URL)
+
+        # Deployment to Salesforce
+        - template: templates/sf-deploy.yml
