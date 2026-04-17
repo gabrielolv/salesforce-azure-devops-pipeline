@@ -1,0 +1,5 @@
+global enum IdentityProviderAuthFlow {
+AUTHORIZATIONCODE,
+CLIENTCREDENTIALS,
+SALESFORCEDEFINED
+}

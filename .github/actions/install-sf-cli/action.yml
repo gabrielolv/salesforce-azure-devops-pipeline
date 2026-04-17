@@ -1,0 +1,16 @@
+name: Install Salesforce CLI
+description: Install Node.js 22 and Salesforce CLI globally
+
+runs:
+  using: composite
+  steps:
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Install Salesforce CLI
+      shell: bash
+      run: |
+        echo "Installing new version of Salesforce CLI..."
+        npm install @salesforce/cli --global

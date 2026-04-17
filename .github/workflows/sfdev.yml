@@ -1,0 +1,125 @@
+name: sfdev
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+    inputs:
+      commit_hash:
+        description: 'Specific commit hash to deploy (leave empty for latest)'
+        required: false
+        default: ''
+
+jobs:
+  # ─────────────── BUILD & VALIDATION ───────────────
+  build-and-validate:
+    name: Build and Pre-Deployment Validation
+    runs-on: ubuntu-latest
+    environment: sfdev
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install Salesforce CLI
+        uses: ./.github/actions/install-sf-cli
+
+      - name: Set commit hash from input
+        if: ${{ github.event.inputs.commit_hash != '' }}
+        run: |
+          commitHash="${{ github.event.inputs.commit_hash }}"
+          echo "Validating commit $commitHash exists on branch ${GITHUB_REF_NAME}..."
+          git fetch origin
+          if ! git branch -r --contains "$commitHash" | grep -q "origin/${GITHUB_REF_NAME}"; then
+            echo "::error::Commit $commitHash does not exist in branch ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+          echo "COMMIT_HASH=$commitHash" >> $GITHUB_ENV
+
+      - name: Get last successful commit
+        uses: ./.github/actions/get-last-successful-commit
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install plugins
+        uses: ./.github/actions/install-plugin
+
+      - name: Generate delta package
+        uses: ./.github/actions/generate-delta
+        with:
+          commit_hash: ${{ env.COMMIT_HASH }}
+
+      - name: Generate sf command for running tests
+        run: |
+          echo "Generating sf command for running tests..."
+          sfCommandTests=$(node -e "require('./pipelines/GenerateSfdxCommand.js')();")
+          echo "sfCommandTests=$sfCommandTests" >> $GITHUB_ENV
+          echo "sfCommandTests: $sfCommandTests"
+
+      - name: Login to Salesforce
+        uses: ./.github/actions/sf-login
+        with:
+          sf_username: ${{ secrets.SF_USERNAME }}
+          sf_password: ${{ secrets.SF_PASSWORD }}
+          sf_client_id: ${{ secrets.SF_CLIENT_ID }}
+          sf_client_secret: ${{ secrets.SF_CLIENT_SECRET }}
+          sf_login_url: ${{ secrets.SF_LOGIN_URL }}
+
+      - name: Check deploy (specific tests)
+        uses: ./.github/actions/sf-check-deploy
+        with:
+          include_sf_command_tests: 'true'
+          display_name: 'Check to deploy to Salesforce'
+
+      - name: Check deploy (all tests)
+        uses: ./.github/actions/sf-check-deploy
+        with:
+          run_all_tests: 'true'
+          display_name: 'Run all tests'
+
+  # ─────────────── SALESFORCE DEPLOYMENT ───────────────
+  deploy-to-salesforce:
+    name: Salesforce Deployment
+    runs-on: ubuntu-latest
+    environment: sfdev
+    needs: build-and-validate
+    if: github.ref_name == 'develop'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install Salesforce CLI
+        uses: ./.github/actions/install-sf-cli
+
+      - name: Get last successful commit
+        uses: ./.github/actions/get-last-successful-commit
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install plugins
+        uses: ./.github/actions/install-plugin
+
+      - name: Generate delta package
+        uses: ./.github/actions/generate-delta
+        with:
+          commit_hash: ${{ env.COMMIT_HASH }}
+
+      - name: Login to Salesforce
+        uses: ./.github/actions/sf-login
+        with:
+          sf_username: ${{ secrets.SF_USERNAME }}
+          sf_password: ${{ secrets.SF_PASSWORD }}
+          sf_client_id: ${{ secrets.SF_CLIENT_ID }}
+          sf_client_secret: ${{ secrets.SF_CLIENT_SECRET }}
+          sf_login_url: ${{ secrets.SF_LOGIN_URL }}
+
+      - name: Deploy to Salesforce
+        uses: ./.github/actions/sf-deploy

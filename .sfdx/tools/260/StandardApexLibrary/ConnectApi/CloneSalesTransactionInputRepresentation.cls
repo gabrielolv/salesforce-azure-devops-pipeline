@@ -1,0 +1,11 @@
+global class CloneSalesTransactionInputRepresentation {
+	global ConnectApi.CloneOptionsInputRepresentation options;
+	global List<String> recordIds;
+	global String salesTransactionId;
+	global CloneSalesTransactionInputRepresentation() { }
+	global Object clone() { }
+	global Boolean equals(Object obj) { }
+	global Integer hashCode() { }
+	global String toString() { }
+
+}

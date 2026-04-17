@@ -1,0 +1,38 @@
+name: Get Last Successful Commit
+description: Retrieves the commit hash from the last successful workflow run on this branch
+
+inputs:
+  github_token:
+    description: GitHub token for API access
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Get last successful run commit
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        if [ -n "$COMMIT_HASH" ]; then
+          echo "COMMIT_HASH already set to $COMMIT_HASH, skipping."
+          exit 0
+        fi
+
+        echo "Fetching last successful workflow run on branch: ${GITHUB_REF_NAME}..."
+
+        LAST_COMMIT=$(gh run list \
+          --repo "$GITHUB_REPOSITORY" \
+          --workflow "${GITHUB_WORKFLOW}.yml" \
+          --branch "${GITHUB_REF_NAME}" \
+          --status success \
+          --limit 1 \
+          --json headSha \
+          --jq '.[0].headSha')
+
+        if [ -z "$LAST_COMMIT" ] || [ "$LAST_COMMIT" = "null" ]; then
+          echo "No previous successful run found for branch ${GITHUB_REF_NAME}."
+        else
+          echo "Last successful commit: $LAST_COMMIT"
+          echo "COMMIT_HASH=$LAST_COMMIT" >> $GITHUB_ENV
+        fi

@@ -1,0 +1,24 @@
+name: Deploy to Salesforce
+description: Execute actual Salesforce deployment with RunLocalTests
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy to Salesforce
+      shell: bash
+      run: |
+        echo "Deploying to Salesforce..."
+        sfdx_project_dir=$(find . -name 'sfdx-project.json' -exec dirname {} \; | head -n 1)
+
+        if [ -z "$sfdx_project_dir" ]; then
+          echo "sfdx-project.json not found!"
+          exit 1
+        fi
+
+        cd "$sfdx_project_dir"
+        sf project deploy start \
+          -x ./delta/package/package.xml \
+          --post-destructive-changes ./delta/destructiveChanges/destructiveChanges.xml \
+          --test-level RunLocalTests \
+          --verbose --json \
+          --target-org $SF_INSTANCE_NAME

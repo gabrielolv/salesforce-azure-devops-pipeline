@@ -1,0 +1,33 @@
+name: Run Apex Scripts
+description: Execute all .apex scripts found in a specified folder
+
+inputs:
+  folder:
+    description: Path to folder containing .apex scripts
+    required: true
+  display_name:
+    description: Step display name
+    default: 'Run Apex scripts'
+
+runs:
+  using: composite
+  steps:
+    - name: ${{ inputs.display_name }}
+      shell: bash
+      run: |
+        echo "Running scripts from folder: ${{ inputs.folder }}"
+
+        if [ ! -d "${{ inputs.folder }}" ]; then
+          echo "No scripts found in ${{ inputs.folder }}"
+          exit 0
+        fi
+
+        for script in $(ls ${{ inputs.folder }}/*.apex 2>/dev/null); do
+          echo "Executing $script..."
+          sf apex run --target-org $SF_INSTANCE_NAME --file "$script" --json --wait 10
+          status=$?
+          if [ $status -ne 0 ]; then
+            echo "::error::Failed executing $script"
+            exit $status
+          fi
+        done
