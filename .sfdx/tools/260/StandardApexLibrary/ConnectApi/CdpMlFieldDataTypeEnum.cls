@@ -1,0 +1,13 @@
+global enum CdpMlFieldDataTypeEnum {
+ARRAYOFTEXT,
+BOOLEAN,
+CURRENCY,
+DATE,
+DATETIME,
+EMAIL,
+NUMBER,
+PERCENT,
+PHONE,
+TEXT,
+URL
+}

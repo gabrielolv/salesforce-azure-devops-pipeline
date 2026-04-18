@@ -1,0 +1,33 @@
+name: first-run-baseline
+
+# Trigger manually only. Run this once per branch before the org pipelines
+# are executed for the first time, so get-last-successful-commit has a
+# successful run to reference as the baseline commit.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to establish the baseline on'
+        required: true
+        type: choice
+        options:
+          - develop
+          - qa
+          - stage
+          - main
+
+jobs:
+  set-baseline:
+    name: Set pipeline baseline for ${{ github.event.inputs.branch }}
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Baseline established
+        run: echo "Baseline set for branch ${{ github.event.inputs.branch }} at commit $GITHUB_SHA"

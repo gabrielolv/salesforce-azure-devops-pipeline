@@ -1,0 +1,44 @@
+name: Salesforce Login
+description: Authenticate to Salesforce via OAuth2 password flow and set SF_INSTANCE_NAME
+
+inputs:
+  sf_username:
+    required: true
+  sf_password:
+    required: true
+  sf_client_id:
+    required: true
+  sf_client_secret:
+    required: true
+  sf_login_url:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Login to Salesforce
+      shell: bash
+      run: |
+        echo "Logging into Salesforce..."
+        response=$(curl -s -X POST ${{ inputs.sf_login_url }}/services/oauth2/token \
+          -d "grant_type=client_credentials" \
+          -d "client_id=${{ inputs.sf_client_id }}" \
+          -d "client_secret=${{ inputs.sf_client_secret }}" \
+          -d "username=${{ inputs.sf_username }}" \
+          -d "password=${{ inputs.sf_password }}")
+
+        echo $response | jq .
+
+        SF_ACCESS_TOKEN=$(echo $response | jq -r .access_token)
+        SF_INSTANCE_URL=$(echo $response | jq -r .instance_url)
+
+        if [[ -z "$SF_ACCESS_TOKEN" || "$SF_ACCESS_TOKEN" == "null" ]]; then
+          echo "Error: Failed to retrieve access token."
+          exit 1
+        fi
+
+        SF_INSTANCE_NAME=$(echo $SF_INSTANCE_URL | awk -F[/:] '{print $4}' | cut -d'.' -f1)
+
+        SF_ACCESS_TOKEN=$SF_ACCESS_TOKEN sf org login access-token --instance-url $SF_INSTANCE_URL -a $SF_INSTANCE_NAME --no-prompt
+
+        echo "SF_INSTANCE_NAME=$SF_INSTANCE_NAME" >> $GITHUB_ENV

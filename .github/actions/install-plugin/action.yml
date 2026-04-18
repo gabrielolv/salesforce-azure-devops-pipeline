@@ -1,0 +1,17 @@
+name: Install SF Plugins
+description: Configure SOAP API for deployment and install sfdx-git-delta
+
+runs:
+  using: composite
+  steps:
+    - name: Use SOAP API for Deployment
+      shell: bash
+      run: |
+        echo "Configuring Salesforce CLI to use SOAP API for deployment..."
+        sf config set org-metadata-rest-deploy false --global
+
+    - name: Install sfdx-git-delta Plugin
+      shell: bash
+      run: |
+        echo "Installing sfdx-git-delta plugin..."
+        printf "y\n" | sf plugins install sfdx-git-delta

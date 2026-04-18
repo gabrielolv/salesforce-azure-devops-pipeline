@@ -1,0 +1,26 @@
+name: Generate Delta
+description: Generate the delta package using sfdx-git-delta
+
+inputs:
+  commit_hash:
+    description: Base commit hash for delta generation
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Generate delta
+      shell: bash
+      run: |
+        echo "Generating delta..."
+        mkdir -p delta
+        echo "Using commitHash: ${{ inputs.commit_hash }}"
+        echo "Generating delta from ${{ inputs.commit_hash }} to origin/${GITHUB_REF_NAME}"
+        sfdx sgd:source:delta -f ${{ inputs.commit_hash }} -t origin/${GITHUB_REF_NAME} -o ./delta
+
+        echo -e "\ndelta/package/package.xml\n"
+        cat ./delta/package/package.xml
+        echo -e "\ndelta/destructiveChanges/package.xml\n"
+        cat ./delta/destructiveChanges/package.xml
+        echo -e "\ndelta/destructiveChanges/destructiveChanges.xml\n"
+        cat ./delta/destructiveChanges/destructiveChanges.xml
