@@ -17,6 +17,11 @@ jobs:
     name: Build and Pre-Deployment Validation
     runs-on: ubuntu-latest
     environment: sfstage
+    permissions:
+      actions: read
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout repository
@@ -56,7 +61,7 @@ jobs:
       - name: Generate sf command for running tests
         run: |
           echo "Generating sf command for running tests..."
-          sfCommandTests=$(node -e "require('./pipelines/GenerateSfdxCommand.js')();")
+          sfCommandTests=$(node -e "require('./.github/workflows/GenerateSfdxCommand.js')();")
           echo "sfCommandTests=$sfCommandTests" >> $GITHUB_ENV
           echo "sfCommandTests: $sfCommandTests"
 
@@ -88,6 +93,11 @@ jobs:
     environment: sfstage
     needs: build-and-validate
     if: github.ref_name == 'stage'
+    permissions:
+      actions: read
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout repository

@@ -31,6 +31,18 @@ runs:
           --jq '.[0].headSha')
 
         if [ -z "$LAST_COMMIT" ] || [ "$LAST_COMMIT" = "null" ]; then
+          echo "No previous successful run found for ${GITHUB_WORKFLOW}.yml, checking first-run-baseline.yml..."
+          LAST_COMMIT=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow "first-run-baseline.yml" \
+            --branch "${GITHUB_REF_NAME}" \
+            --status success \
+            --limit 1 \
+            --json headSha \
+            --jq '.[0].headSha')
+        fi
+
+        if [ -z "$LAST_COMMIT" ] || [ "$LAST_COMMIT" = "null" ]; then
           echo "No previous successful run found for branch ${GITHUB_REF_NAME}."
         else
           echo "Last successful commit: $LAST_COMMIT"

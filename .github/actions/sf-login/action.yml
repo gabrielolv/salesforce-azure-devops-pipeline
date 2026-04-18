@@ -21,7 +21,7 @@ runs:
       run: |
         echo "Logging into Salesforce..."
         response=$(curl -s -X POST ${{ inputs.sf_login_url }}/services/oauth2/token \
-          -d "grant_type=password" \
+          -d "grant_type=client_credentials" \
           -d "client_id=${{ inputs.sf_client_id }}" \
           -d "client_secret=${{ inputs.sf_client_secret }}" \
           -d "username=${{ inputs.sf_username }}" \
@@ -39,6 +39,6 @@ runs:
 
         SF_INSTANCE_NAME=$(echo $SF_INSTANCE_URL | awk -F[/:] '{print $4}' | cut -d'.' -f1)
 
-        sf org login access-token --instance-url $SF_INSTANCE_URL -a $SF_INSTANCE_NAME --no-prompt
+        SF_ACCESS_TOKEN=$SF_ACCESS_TOKEN sf org login access-token --instance-url $SF_INSTANCE_URL -a $SF_INSTANCE_NAME --no-prompt
 
         echo "SF_INSTANCE_NAME=$SF_INSTANCE_NAME" >> $GITHUB_ENV
