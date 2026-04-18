@@ -128,8 +128,10 @@ function generateSfdxCommand() {
 
       //console.log(member);
       memberNames.forEach((member) => {
-        // Construct the test file path. This depends on your project structure and naming convention.
-        const testFilePath = findFileNameContainingString(files, member);
+        // Prefer {member}Test over {member} to avoid matching the source class itself
+        const testFilePath =
+          findFileNameContainingString(files, member + "Test") ||
+          findFileNameContainingString(files, member);
 
         // Check if the test file exists
         if (testFilePath) {
