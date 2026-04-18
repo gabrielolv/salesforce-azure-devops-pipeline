@@ -132,5 +132,17 @@ jobs:
           sf_client_secret: ${{ secrets.SF_CLIENT_SECRET }}
           sf_login_url: ${{ secrets.SF_LOGIN_URL }}
 
+      - name: Run pre-deployment scripts
+        uses: ./.github/actions/run-scripts
+        with:
+          folder: .github/pre-deployment
+          display_name: 'Run pre-deployment Apex scripts'
+
       - name: Deploy to Salesforce
         uses: ./.github/actions/sf-deploy
+
+      - name: Run post-deployment scripts
+        uses: ./.github/actions/run-scripts
+        with:
+          folder: .github/post-deployment
+          display_name: 'Run post-deployment Apex scripts'

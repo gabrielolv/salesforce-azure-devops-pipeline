@@ -24,7 +24,7 @@ runs:
 
         for script in $(ls ${{ inputs.folder }}/*.apex 2>/dev/null); do
           echo "Executing $script..."
-          sf apex run --target-org $SF_INSTANCE_NAME --file "$script" --json --wait 10
+          sf apex run --target-org $SF_INSTANCE_NAME --file "$script" --json
           status=$?
           if [ $status -ne 0 ]; then
             echo "::error::Failed executing $script"
