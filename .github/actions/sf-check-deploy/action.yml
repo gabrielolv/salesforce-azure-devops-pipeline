@@ -12,10 +12,16 @@ inputs:
     description: Step display name
     default: 'Check to deploy to Salesforce'
 
+outputs:
+  nothing_to_deploy:
+    description: 'true when the SF CLI reports NothingToDeploy (empty package)'
+    value: ${{ steps.run-deploy-check.outputs.nothing_to_deploy }}
+
 runs:
   using: composite
   steps:
     - name: ${{ inputs.display_name }}
+      id: run-deploy-check
       shell: bash
       run: |
         echo "${{ inputs.display_name }}..."
@@ -42,9 +48,22 @@ runs:
         cmd="$cmd --verbose --json --target-org $SF_INSTANCE_NAME"
 
         echo "Executing: $cmd"
-        eval $cmd
+
+        set +e
+        output=$(eval $cmd 2>&1)
         deploy_status=$?
+        set -e
+
+        echo "$output"
+
+        if [ $deploy_status -ne 0 ] && echo "$output" | grep -q 'NothingToDeploy'; then
+          echo "::notice title=Nothing to Deploy::No Salesforce metadata changes in this delta. Deployment steps will be skipped."
+          echo "nothing_to_deploy=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
 
         if [[ "${{ inputs.run_all_tests }}" == "true" && $deploy_status -ne 0 ]]; then
           echo "::warning::Deployment check encountered an issue. Exit status: $deploy_status. Continuing."
         fi
+
+        exit $deploy_status

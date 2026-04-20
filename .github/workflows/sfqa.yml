@@ -20,6 +20,8 @@ jobs:
     permissions:
       actions: read
       contents: read
+    outputs:
+      nothing_to_deploy: ${{ steps.check-deploy-specific.outputs.nothing_to_deploy == 'true' || steps.check-deploy-all.outputs.nothing_to_deploy == 'true' }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -75,12 +77,15 @@ jobs:
           sf_login_url: ${{ secrets.SF_LOGIN_URL }}
 
       - name: Check deploy (specific tests)
+        id: check-deploy-specific
         uses: ./.github/actions/sf-check-deploy
         with:
           include_sf_command_tests: 'true'
           display_name: 'Check to deploy to Salesforce'
 
       - name: Check deploy (all tests)
+        id: check-deploy-all
+        if: steps.check-deploy-specific.outputs.nothing_to_deploy != 'true'
         uses: ./.github/actions/sf-check-deploy
         with:
           run_all_tests: 'true'
@@ -92,7 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: sfqa
     needs: build-and-validate
-    if: github.ref_name == 'qa'
+    if: github.ref_name == 'qa' && needs.build-and-validate.outputs.nothing_to_deploy != 'true'
     permissions:
       actions: read
       contents: read
