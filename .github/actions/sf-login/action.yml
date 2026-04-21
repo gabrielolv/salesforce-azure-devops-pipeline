@@ -27,8 +27,6 @@ runs:
           -d "username=${{ inputs.sf_username }}" \
           -d "password=${{ inputs.sf_password }}")
 
-        echo $response | jq .
-
         SF_ACCESS_TOKEN=$(echo $response | jq -r .access_token)
         SF_INSTANCE_URL=$(echo $response | jq -r .instance_url)
 
