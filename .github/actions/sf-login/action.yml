@@ -26,6 +26,7 @@ runs:
          # Write private key to an ephemeral file with restricted permissions
         KEY_FILE="$(mktemp)"
         chmod 600 "$KEY_FILE"
+        echo "${{ inputs.sf_jwt_key }}" > "$KEY_FILE"
 
         # Authenticate — the CLI handles the JWT signing, POST to /services/oauth2/token,
         # and stores the resulting access token under the alias
