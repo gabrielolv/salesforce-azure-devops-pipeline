@@ -4,14 +4,16 @@ description: Authenticate to Salesforce via OAuth2 password flow and set SF_INST
 inputs:
   sf_username:
     required: true
-  sf_password:
-    required: true
+    description: Username of the integration user
   sf_client_id:
     required: true
-  sf_client_secret:
+    description: Consumer Key of the Connected App / External Client App
+  sf_jwt_key:
     required: true
+    description: Contents of the server.key private key file (PEM format, multiline)
   sf_login_url:
     required: true
+    description: https://login.salesforce.com for prod, https://test.salesforce.com for sandboxes
 
 runs:
   using: composite
@@ -20,25 +22,32 @@ runs:
       shell: bash
       run: |
         echo "Logging into Salesforce..."
-        response=$(curl -s -X POST ${{ inputs.sf_login_url }}/services/oauth2/token \
-          -d "grant_type=client_credentials" \
-          -d "client_id=${{ inputs.sf_client_id }}" \
-          -d "client_secret=${{ inputs.sf_client_secret }}" \
-          -d "username=${{ inputs.sf_username }}" \
-          -d "password=${{ inputs.sf_password }}")
+        
+         # Write private key to an ephemeral file with restricted permissions
+        KEY_FILE="$(mktemp)"
+        chmod 600 "$KEY_FILE"
+        echo "${{ inputs.sf_jwt_key }}" > "$KEY_FILE"
 
-        echo $response | jq .
+        # Authenticate — the CLI handles the JWT signing, POST to /services/oauth2/token,
+        # and stores the resulting access token under the alias
+        sf org login jwt \
+          --client-id "${{ inputs.sf_client_id }}" \
+          --jwt-key-file "$KEY_FILE" \
+          --username "${{ inputs.sf_username }}" \
+          --instance-url "${{ inputs.sf_login_url }}" \
+          --alias sf-target \
+          --set-default
 
-        SF_ACCESS_TOKEN=$(echo $response | jq -r .access_token)
-        SF_INSTANCE_URL=$(echo $response | jq -r .instance_url)
+        # Immediately delete the private key from the runner filesystem
+        rm -f "$KEY_FILE"
 
-        if [[ -z "$SF_ACCESS_TOKEN" || "$SF_ACCESS_TOKEN" == "null" ]]; then
-          echo "Error: Failed to retrieve access token."
-          exit 1
-        fi
+        # Extract the instance URL from the stored auth info and derive the instance name
+        SF_INSTANCE_URL=$(sf org display --target-org sf-target --json | jq -r '.result.instanceUrl')
+        SF_INSTANCE_NAME=$(echo "$SF_INSTANCE_URL" | awk -F[/:] '{print $4}' | cut -d'.' -f1)
 
-        SF_INSTANCE_NAME=$(echo $SF_INSTANCE_URL | awk -F[/:] '{print $4}' | cut -d'.' -f1)
-
-        SF_ACCESS_TOKEN=$SF_ACCESS_TOKEN sf org login access-token --instance-url $SF_INSTANCE_URL -a $SF_INSTANCE_NAME --no-prompt
+        # Re-alias to the actual instance name (keeps downstream steps that reference
+        # $SF_INSTANCE_NAME working unchanged)
+        sf alias set "$SF_INSTANCE_NAME"="${{ inputs.sf_username }}"
 
         echo "SF_INSTANCE_NAME=$SF_INSTANCE_NAME" >> $GITHUB_ENV
+        echo "Authenticated as ${{ inputs.sf_username }} → $SF_INSTANCE_NAME"

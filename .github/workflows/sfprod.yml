@@ -71,9 +71,8 @@ jobs:
         uses: ./.github/actions/sf-login
         with:
           sf_username: ${{ secrets.SF_USERNAME }}
-          sf_password: ${{ secrets.SF_PASSWORD }}
           sf_client_id: ${{ secrets.SF_CLIENT_ID }}
-          sf_client_secret: ${{ secrets.SF_CLIENT_SECRET }}
+          sf_jwt_key: ${{ secrets.SF_JWT_KEY }}
           sf_login_url: ${{ secrets.SF_LOGIN_URL }}
 
       - name: Check deploy (specific tests)
@@ -132,9 +131,8 @@ jobs:
         uses: ./.github/actions/sf-login
         with:
           sf_username: ${{ secrets.SF_USERNAME }}
-          sf_password: ${{ secrets.SF_PASSWORD }}
           sf_client_id: ${{ secrets.SF_CLIENT_ID }}
-          sf_client_secret: ${{ secrets.SF_CLIENT_SECRET }}
+          sf_jwt_key: ${{ secrets.SF_JWT_KEY }}
           sf_login_url: ${{ secrets.SF_LOGIN_URL }}
 
       - name: Run pre-deployment scripts
