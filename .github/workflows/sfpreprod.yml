@@ -3,7 +3,7 @@ name: sfpreprodvalidation
 on:
   push:
     branches:
-      - main
+      - pre-prod-validation
   workflow_dispatch:
     inputs:
       commit_hash:
