@@ -1,187 +1,249 @@
-# Azure DevOps Salesforce Deployment Pipeline
+# Salesforce DevOps Pipeline
 
-This repository provides a set of Azure DevOps pipelines to manage Salesforce metadata deployments through delta generation, environment-specific configurations, and test execution automation.
+A multi-CI Salesforce DevOps toolkit supporting both **GitHub Actions** and **Azure DevOps**. It covers delta-based metadata deployments, dynamic Apex test selection, JWT authentication, pre/post deployment scripts, and an automated PR review bot for Salesforce best practices.
+
+---
 
 ## Overview
 
-This pipeline architecture allows you to:
+This repository provides:
 
-* Perform selective deployments to Salesforce using delta detection.
-* Dynamically generate test class execution commands.
-* Retrieve environment-specific secrets via dedicated pipelines.
-* Run per-environment pipelines, each scoped to its own branch and variable group.
+- **Deployment pipelines** for multiple Salesforce environments (Dev, QA, Stage, Pre-Prod, Prod) on both GitHub Actions and Azure DevOps.
+- **Delta-based deployments** via `sfdx-git-delta` — only changed metadata is deployed.
+- **Dynamic test selection** — a Node.js script reads `package.xml` and runs only the relevant Apex test classes.
+- **JWT Bearer Flow authentication** — no passwords stored; uses Connected App + private key.
+- **Pre/post deployment Apex scripts** — run anonymous Apex before and after each deployment.
+- **Salesforce PR Review Bot** — GitHub App that automatically reviews pull requests for Salesforce best practices across Apex, Triggers, LWC, Flows, Security, and Metadata.
 
 ---
 
 ## Repository Structure
 
 ```
-pipelines/
-├── sfdev-azure-pipelines.yml       # Pipeline for the Dev org (branch: develop)
-├── sfqa-azure-pipelines.yml        # Pipeline for the QA org (branch: qa)
-├── sfuat-azure-pipelines.yml       # Pipeline for the UAT org (branch: uat)
-├── sfpstage-azure-pipelines.yml    # Pipeline for the Stage org (branch: stage)
-├── sfprod-azure-pipelines.yml      # Pipeline for the Prod org (branch: main)
-├── variables-pipelines.yml         # Helper pipeline to publish env variables as artifacts
-├── azure-pipelines-without-destructive-package.yml  # Variant without destructive changes
-└── templates/
-    ├── install-sf-cli.yml
-    ├── install-plugin.yml
-    ├── get-commit-hash.yml
-    ├── get-last-successful-commit.yml
-    ├── generate-delta.yml
-    ├── generate-delta-without-destructive-package.yml
-    ├── sf-login.yml
-    ├── sf-check-deploy.yml
-    ├── sf-check-deploy-without-destructive-package.yml
-    ├── sf-deploy.yml
-    └── sf-deploy-without-destructive-package.yml
+.azure/
+├── pipelines/
+│   ├── sfdev-azure-pipelines.yml       # Azure: Dev org (branch: develop)
+│   ├── sfqa-azure-pipelines.yml        # Azure: QA org (branch: qa)
+│   ├── sfuat-azure-pipelines.yml       # Azure: UAT org (branch: uat)
+│   ├── sfpstage-azure-pipelines.yml    # Azure: Stage org (branch: stage)
+│   ├── sfprod-azure-pipelines.yml      # Azure: Prod org (branch: main)
+│   ├── azure-pipelines-without-destructive-package.yml
+│   ├── GenerateSfdxCommand.js
+│   └── templates/
+│       ├── install-sf-cli.yml
+│       ├── install-plugin.yml
+│       ├── get-commit-hash.yml
+│       ├── get-last-successful-commit.yml
+│       ├── generate-delta.yml
+│       ├── sf-login.yml
+│       ├── sf-check-deploy.yml
+│       ├── sf-deploy.yml
+│       └── run-scripts.yml
+├── scripts/
+│   ├── pre-deployment/
+│   └── post-deployment/
+
+.github/
+├── workflows/
+│   ├── sfdev.yml                   # GitHub Actions: Dev org (branch: develop)
+│   ├── sfqa.yml                    # GitHub Actions: QA org (branch: qa)
+│   ├── sfstage.yml                 # GitHub Actions: Stage org (branch: stage)
+│   ├── sfprod.yml                  # GitHub Actions: Prod org (branch: main)
+│   ├── sfpreprodvalidation.yml     # GitHub Actions: Pre-prod validation only
+│   ├── salesforce-pr-review.yml    # GitHub Actions: PR Review Bot
+│   ├── first-run-baseline.yml      # One-time baseline setup
+│   └── GenerateSfdxCommand.js
+├── actions/
+│   ├── install-sf-cli/
+│   ├── install-plugin/
+│   ├── get-last-successful-commit/
+│   ├── generate-delta/
+│   ├── sf-login/
+│   ├── sf-check-deploy/
+│   ├── sf-deploy/
+│   └── run-scripts/
+├── scripts/
+│   ├── review.js                   # PR review bot entry point
+│   ├── utils/diffParser.js
+│   └── rules/
+│       ├── apex/
+│       ├── trigger/
+│       ├── lwc/
+│       ├── flow/
+│       ├── security/
+│       └── metadata/
+├── pre-deployment/
+└── post-deployment/
 ```
 
 ---
 
-## Pipeline Breakdown
+## CI Platform Support
 
-### 1. Per-Org Deployment Pipelines
+Both platforms implement the same two-stage pattern: **validate → deploy**.
 
-Each Salesforce org has its own pipeline file. They all follow the same two-stage pattern:
-
-| Pipeline file | Branch trigger | Variable group (validation) | Variable group (deploy) |
+| Platform | Config location | Auth | Reusable units |
 |---|---|---|---|
-| `sfdev-azure-pipelines.yml` | `develop` | `sfdev` | `sfdev` |
-| `sfqa-azure-pipelines.yml` | `qa` | `sfqa` | `sfqa` |
-| `sfuat-azure-pipelines.yml` | `uat` | `sfuat` | `sfuat` |
-| `sfpstage-azure-pipelines.yml` | `stage` | `sfpstage` | `sfpstage` |
-| `sfprod-azure-pipelines.yml` | `main` | `sfprod-validation` | `sfprod` |
+| GitHub Actions | `.github/workflows/` | JWT Bearer Flow | Composite actions (`.github/actions/`) |
+| Azure DevOps | `.azure/pipelines/` | JWT Bearer Flow | YAML templates (`.azure/pipelines/templates/`) |
 
-#### Parameters
+---
 
-* `CommitHash` *(optional)*: Override the target commit for delta generation. Defaults to the last successful pipeline run.
+## Deployment Pipelines
 
-#### Stage 1 — Build & Validation (`BuildAndValidate`)
+### Environment mapping
 
-1. Checkout repository with full history
-2. Install Salesforce CLI (`install-sf-cli.yml`)
-3. Resolve commit hash (`get-commit-hash.yml`)
-4. Retrieve last successful commit (`get-last-successful-commit.yml`)
-5. Install `sfdx-git-delta` plugin (`install-plugin.yml`)
-6. Generate delta package (`generate-delta.yml`)
-7. Generate dynamic test command via `GenerateSfdxCommand.js`
-8. Authenticate to Salesforce (`sf-login.yml`)
-9. Validate deployment with targeted tests (`sf-check-deploy.yml`)
-10. Run all Apex tests (`sf-check-deploy.yml` with `runAllTests: true`)
+| Salesforce Org | Branch | GitHub Actions workflow | Azure DevOps pipeline |
+|---|---|---|---|
+| Dev | `develop` | `sfdev.yml` | `sfdev-azure-pipelines.yml` |
+| QA | `qa` | `sfqa.yml` | `sfqa-azure-pipelines.yml` |
+| Stage | `stage` | `sfstage.yml` | `sfpstage-azure-pipelines.yml` |
+| Pre-Prod (validation only) | `pre-prod-validation` | `sfpreprodvalidation.yml` | — |
+| Prod | `main` | `sfprod.yml` | `sfprod-azure-pipelines.yml` |
 
-#### Stage 2 — Deployment (`DeployToSalesforce`)
+### Stage 1 — Build & Validation
 
-Runs only after `BuildAndValidate` succeeds and uses the org's production variable group (which may require an approval gate in Azure DevOps).
+1. Checkout repository (full history)
+2. Install Salesforce CLI
+3. Resolve the target commit hash (manual override or last successful run)
+4. Install `sfdx-git-delta` plugin
+5. Generate delta package between commits
+6. Generate dynamic Apex test command via `GenerateSfdxCommand.js`
+7. Authenticate to Salesforce via JWT Bearer Flow
+8. Validate deployment with targeted tests (dry-run)
+9. Validate deployment running all Apex tests (dry-run)
+
+### Stage 2 — Deployment
+
+Runs only after Stage 1 passes. For Prod, use GitHub environment protection rules (GitHub Actions) or an approval gate (Azure DevOps) to require a manual review before deployment proceeds.
 
 1. Checkout, install CLI & plugin
 2. Regenerate delta package
 3. Authenticate to Salesforce
-4. Deploy validated metadata (`sf-deploy.yml`)
+4. Run pre-deployment Apex scripts
+5. Deploy validated metadata
+6. Run post-deployment Apex scripts
+
+### Manual trigger / specific commit
+
+Both platforms support `workflow_dispatch` (GitHub) or manual run (Azure DevOps) with an optional `CommitHash` input to target a specific commit range.
 
 ---
 
-### 2. **variables-pipelines.yml**
+## PR Review Bot (GitHub Actions)
 
-Manually triggered helper pipeline that publishes environment-specific secrets as a pipeline artifact (`myVar.txt`).
+The `salesforce-pr-review.yml` workflow triggers on every pull request targeting `develop`. It runs a Node.js script that inspects the PR diff and posts inline review comments for any Salesforce best-practice violations found.
 
-#### Parameters
+### Authentication
 
-* `group`: The Azure DevOps variable group to publish. One of: `SalesforceVariables`, `sfdev`, `sftest`, `sfuat`, `sfprod`.
+The bot authenticates as a GitHub App (not a personal token), so comments appear under the App's identity. Required secrets: `GH_APP_ID` and `GH_APP_PRIVATE_KEY`.
 
-#### How It Works
+### Rules covered
 
-* Reads secret variables (`SF_USERNAME`, `SF_PASSWORD`, etc.) from the selected variable group
-* Writes them as a JSON file and publishes it as the `MyArtifact` pipeline artifact
+**Apex**
+- No SOQL queries inside loops
+- No DML operations inside loops
+- Bulkified logic — collections over single-record operations
+- Apex test coverage — test classes updated when production code changes
+- No hardcoded record IDs
+- No broad `catch (Exception e)` without re-throw
+- Non-selective SOQL queries (missing indexed filter)
+
+**Triggers**
+- One trigger per object
+- No business logic directly in triggers (handler pattern)
+- Recursion guard required
+
+**LWC**
+- No hardcoded URLs
+- Correct navigation service usage
+- No direct DOM manipulation
+- No hardcoded labels (use custom labels)
+- Apex call patterns (wire vs imperative)
+
+**Flow**
+- Manual review required for complex flows
+- Naming convention enforcement
+- Large flow warning
+
+**Security**
+- Prefer Permission Sets over Profiles
+- New fields must have a Permission Set
+- Sensitive permissions flagged
+- LWC insecure DOM usage
+
+**Metadata**
+- Destructive changes flagged
+- Labels/translations consistency
+- Missing dependencies
+- Mixed concerns in a single PR
+- Large Profile diffs
 
 ---
 
-### 3. **azure-pipelines-without-destructive-package.yml**
+## Authentication — JWT Bearer Flow
 
-A variant of the deployment pipeline that skips destructive changes. Triggered on `develop`, `test`, `uat`, and `main`. Uses the `*-without-destructive-package` template variants throughout.
+Both platforms use **JWT Bearer Flow** (no passwords). The SF CLI authenticates with:
 
----
-
-## Reusable Templates
-
-| Template | Purpose |
+| Secret | Description |
 |---|---|
-| `install-sf-cli.yml` | Installs the Salesforce CLI |
-| `install-plugin.yml` | Installs `sfdx-git-delta` |
-| `get-commit-hash.yml` | Resolves the target commit hash |
-| `get-last-successful-commit.yml` | Retrieves the last successful pipeline commit |
-| `generate-delta.yml` | Generates the delta package between commits |
-| `sf-login.yml` | Authenticates to a Salesforce org |
-| `sf-check-deploy.yml` | Validates a deployment (dry-run) with optional test execution |
-| `sf-deploy.yml` | Deploys validated metadata to the target org |
+| `SF_CLIENT_ID` | Connected App Consumer Key |
+| `SF_JWT_KEY` | Private key PEM contents (`server.key`) |
+| `SF_USERNAME` | Salesforce username of the integration user |
+| `SF_LOGIN_URL` | `https://login.salesforce.com` (prod) or `https://test.salesforce.com` (sandbox) |
 
-`*-without-destructive-package` variants of `generate-delta`, `sf-check-deploy`, and `sf-deploy` are also available for pipelines that should not process destructive changes.
+Store these as **GitHub Actions environment secrets** (one environment per org) or **Azure DevOps variable groups** (one group per org).
 
----
+### GitHub Actions environments
 
-## Custom Script: `GenerateSfdxCommand.js`
+Create one environment per org in your repository settings and add the secrets above to each:
 
-This Node.js script reads the generated `package.xml` and:
+- `sfdev`
+- `sfqa`
+- `sfstage`
+- `sfprod`
+- `salesforce-pr-review-bot` (requires `GH_APP_ID` and `GH_APP_PRIVATE_KEY`)
 
-* Searches for related test files in the project
-* Generates a dynamic SFDX command to run only the relevant Apex tests
+### Azure DevOps variable groups
 
-The output is stored as the pipeline variable `sfCommandTests`.
-
----
-
-## Required Variable Groups
-
-Each Salesforce environment must have a variable group in Azure DevOps containing:
-
-| Variable | Description |
-|---|---|
-| `SF_CLIENT_ID` | Connected App client ID |
-| `SF_CLIENT_SECRET` | Connected App client secret |
-| `SF_USERNAME` | Salesforce username |
-| `SF_PASSWORD` | Salesforce password |
-| `SF_LOGIN_URL` | Salesforce login URL |
-
-Variable groups used by this project:
-
-* `sfdev`
-* `sfqa`
-* `sfuat`
-* `sfpstage`
-* `sfprod`
-* `sfprod-validation` *(read-only group used during the validation stage for prod)*
+- `sfdev`, `sfqa`, `sfuat`, `sfpstage`, `sfprod`
+- `sfprod-validation` — read-only group used during the prod validation stage
 
 ---
 
-## How to Use
+## Pre/Post Deployment Apex Scripts
 
-### Deploy to a Salesforce Org
+Place anonymous Apex files in:
 
-1. Push or merge your changes to the appropriate branch (`develop`, `qa`, `uat`, `stage`, or `main`).
-2. The matching per-org pipeline will automatically:
-   * Resolve the target commit
-   * Generate the metadata delta
-   * Determine which Apex test classes to run
-   * Validate the deployment
-   * Deploy to the target org (with optional approval gate for prod)
+- **GitHub Actions**: `.github/pre-deployment/` and `.github/post-deployment/`
+- **Azure DevOps**: `.azure/scripts/pre-deployment/` and `.azure/scripts/post-deployment/`
 
-### Run with a Specific Commit
+All `.apex` files in those folders are executed in order using `sf apex run`. Use these for data seeding, permission assignments, or cleanup tasks that must run around a deployment.
 
-Trigger the pipeline manually and supply a value for the `CommitHash` parameter to target a specific commit range.
+---
+
+## First-Run Baseline (GitHub Actions)
+
+Before running a deployment workflow on a branch for the first time, run the `first-run-baseline` workflow manually. This creates a successful workflow run that `get-last-successful-commit` can use as the starting commit for delta generation.
+
+1. Go to **Actions → first-run-baseline → Run workflow**.
+2. Select the target branch.
+3. Run the deployment workflow normally after this completes.
+
+---
+
+## Dynamic Test Selection — `GenerateSfdxCommand.js`
+
+This Node.js script reads the generated `delta/package/package.xml` and searches for related test files in the project. It outputs a `--tests` flag string (`sfCommandTests`) containing only the test classes relevant to the changed metadata.
+
+The deployment validation step then uses this output to run a targeted subset of tests before falling back to a full test run.
 
 ---
 
 ## Output
 
-* Deployment delta in `./delta`
-* Dynamic test command as pipeline variable: `sfCommandTests`
-* Deployed changes applied to the target Salesforce org
-
----
-
-## Notes
-
-* Deployment uses `sf project deploy` (SOAP API explicitly enabled)
-* Delta generation uses the `sfdx-git-delta` plugin
-* The prod pipeline uses a separate `sfprod-validation` variable group during validation to allow an approval gate before the actual deployment variable group (`sfprod`) is used
+| Artifact | Description |
+|---|---|
+| `./delta` | Generated metadata delta package |
+| `sfCommandTests` | Dynamic Apex test command string |
+| Salesforce org | Deployed metadata changes |
