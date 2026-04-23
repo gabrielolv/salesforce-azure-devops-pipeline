@@ -143,6 +143,11 @@ jobs:
       - name: Deploy to Salesforce
         uses: ./.github/actions/sf-deploy
 
+      - name: Deploy Vlocity components
+        uses: ./.github/actions/vlocity-deploy
+        with:
+          vlocity_root: vlocity
+
       - name: Run post-deployment scripts
         uses: ./.github/actions/run-scripts
         with:

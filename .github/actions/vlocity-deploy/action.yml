@@ -1,0 +1,75 @@
+name: Vlocity Deploy
+description: Deploy and delete Vlocity managed-package Omni Studio components via the Vlocity Build Tool
+
+inputs:
+  vlocity_root:
+    required: false
+    default: vlocity
+    description: Path to the Vlocity datapacks directory relative to the repo root
+  vlocity_version:
+    required: false
+    default: latest
+    description: vlocity npm package version (pin to a specific version for reproducibility, e.g. "1.18.0")
+
+runs:
+  using: composite
+  steps:
+    - name: Install Vlocity Build Tool
+      shell: bash
+      run: npm install -g vlocity@${{ inputs.vlocity_version }}
+
+    - name: Detect changed Vlocity components
+      shell: bash
+      run: |
+        chmod +x .github/scripts/vlocity-delta.sh
+        VLOCITY_ROOT="${{ inputs.vlocity_root }}" bash .github/scripts/vlocity-delta.sh
+
+    - name: Check for changes
+      id: check
+      shell: bash
+      run: |
+        DEPLOY=$(grep -c . delta/vlocity/deploy-manifest.txt 2>/dev/null || echo 0)
+        DELETE=$(grep -c . delta/vlocity/delete-manifest.txt 2>/dev/null || echo 0)
+        echo "deploy_count=$DEPLOY" >> $GITHUB_OUTPUT
+        echo "delete_count=$DELETE" >> $GITHUB_OUTPUT
+
+    - name: Resolve Salesforce auth for Vlocity
+      if: steps.check.outputs.deploy_count != '0' || steps.check.outputs.delete_count != '0'
+      shell: bash
+      run: |
+        ORG_JSON=$(sf org display --target-org sf-target --json)
+        ACCESS_TOKEN=$(echo "$ORG_JSON" | jq -r '.result.accessToken')
+        echo "::add-mask::$ACCESS_TOKEN"
+        echo "VLOCITY_ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_ENV
+        echo "VLOCITY_INSTANCE_URL=$(echo "$ORG_JSON" | jq -r '.result.instanceUrl')" >> $GITHUB_ENV
+        echo "VLOCITY_SF_USERNAME=$(echo "$ORG_JSON" | jq -r '.result.username')" >> $GITHUB_ENV
+
+    - name: Deploy Vlocity components
+      if: steps.check.outputs.deploy_count != '0'
+      shell: bash
+      run: |
+        chmod +x .github/scripts/vlocity-build-jobfile.sh
+        VLOCITY_ROOT="${{ inputs.vlocity_root }}" bash .github/scripts/vlocity-build-jobfile.sh \
+          delta/vlocity/deploy-manifest.txt \
+          delta/vlocity/vlocity-deploy-job.yaml
+        vlocity \
+          -sf.username "$VLOCITY_SF_USERNAME" \
+          -sf.accessToken "$VLOCITY_ACCESS_TOKEN" \
+          -sf.instanceUrl "$VLOCITY_INSTANCE_URL" \
+          -job delta/vlocity/vlocity-deploy-job.yaml \
+          packDeploy
+
+    - name: Delete removed Vlocity components
+      if: steps.check.outputs.delete_count != '0'
+      shell: bash
+      run: |
+        chmod +x .github/scripts/vlocity-build-jobfile.sh
+        VLOCITY_ROOT="${{ inputs.vlocity_root }}" bash .github/scripts/vlocity-build-jobfile.sh \
+          delta/vlocity/delete-manifest.txt \
+          delta/vlocity/vlocity-delete-job.yaml
+        vlocity \
+          -sf.username "$VLOCITY_SF_USERNAME" \
+          -sf.accessToken "$VLOCITY_ACCESS_TOKEN" \
+          -sf.instanceUrl "$VLOCITY_INSTANCE_URL" \
+          -job delta/vlocity/vlocity-delete-job.yaml \
+          packDelete
