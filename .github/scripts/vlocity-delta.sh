@@ -50,8 +50,8 @@ else
     > "$DELTA_DIR/delete-manifest.txt"
 fi
 
-DEPLOY_COUNT=$(grep -c . "$DELTA_DIR/deploy-manifest.txt" 2>/dev/null || echo 0)
-DELETE_COUNT=$(grep -c . "$DELTA_DIR/delete-manifest.txt" 2>/dev/null || echo 0)
+DEPLOY_COUNT=0; [ -s "$DELTA_DIR/deploy-manifest.txt" ] && DEPLOY_COUNT=$(grep -c . "$DELTA_DIR/deploy-manifest.txt")
+DELETE_COUNT=0; [ -s "$DELTA_DIR/delete-manifest.txt" ] && DELETE_COUNT=$(grep -c . "$DELTA_DIR/delete-manifest.txt")
 
 echo "Vlocity delta: $DEPLOY_COUNT to deploy, $DELETE_COUNT to delete"
 

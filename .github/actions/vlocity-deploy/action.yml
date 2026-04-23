@@ -28,8 +28,8 @@ runs:
       id: check
       shell: bash
       run: |
-        DEPLOY=$(grep -c . delta/vlocity/deploy-manifest.txt 2>/dev/null || echo 0)
-        DELETE=$(grep -c . delta/vlocity/delete-manifest.txt 2>/dev/null || echo 0)
+        DEPLOY=0; [ -s delta/vlocity/deploy-manifest.txt ] && DEPLOY=$(grep -c . delta/vlocity/deploy-manifest.txt)
+        DELETE=0; [ -s delta/vlocity/delete-manifest.txt ] && DELETE=$(grep -c . delta/vlocity/delete-manifest.txt)
         echo "deploy_count=$DEPLOY" >> $GITHUB_OUTPUT
         echo "delete_count=$DELETE" >> $GITHUB_OUTPUT
 
