@@ -21,7 +21,7 @@ jobs:
       actions: read
       contents: read
     outputs:
-      nothing_to_deploy: ${{ steps.check-deploy-specific.outputs.nothing_to_deploy == 'true' || steps.check-deploy-all.outputs.nothing_to_deploy == 'true' }}
+      nothing_to_deploy: ${{ (steps.check-deploy-specific.outputs.nothing_to_deploy == 'true' || steps.check-deploy-all.outputs.nothing_to_deploy == 'true') && steps.check-vlocity.outputs.has_changes != 'true' }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -59,6 +59,19 @@ jobs:
         uses: ./.github/actions/generate-delta
         with:
           commit_hash: ${{ env.COMMIT_HASH }}
+
+      - name: Detect Vlocity changes
+        id: check-vlocity
+        run: |
+          chmod +x .github/scripts/vlocity-delta.sh
+          VLOCITY_ROOT=vlocity bash .github/scripts/vlocity-delta.sh
+          DEPLOY=$(grep -c . delta/vlocity/deploy-manifest.txt 2>/dev/null || echo 0)
+          DELETE=$(grep -c . delta/vlocity/delete-manifest.txt 2>/dev/null || echo 0)
+          if [ "$DEPLOY" -gt 0 ] || [ "$DELETE" -gt 0 ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Generate sf command for running tests
         run: |

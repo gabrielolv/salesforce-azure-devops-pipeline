@@ -1,0 +1,9 @@
+projectPath: ./vlocity
+expansionPath: ./vlocity
+maxDepth: -1
+continueAfterError: false
+defaultMaxParallel: 1
+activate: true
+manifest:
+  OmniScript:
+    - Test_Pipeline_Smoke
