@@ -1,6 +1,6 @@
 # Salesforce DevOps Pipeline
 
-A multi-CI Salesforce DevOps toolkit supporting both **GitHub Actions** and **Azure DevOps**. It covers delta-based metadata deployments, dynamic Apex test selection, JWT authentication, pre/post deployment scripts, and an automated PR review bot for Salesforce best practices.
+A multi-CI Salesforce DevOps toolkit supporting both **GitHub Actions** and **Azure DevOps**. It covers delta-based metadata deployments, Vlocity/OmniStudio managed-package deployments, dynamic Apex test selection, JWT authentication, pre/post deployment scripts, and an automated PR review bot for Salesforce best practices.
 
 ---
 
@@ -10,6 +10,7 @@ This repository provides:
 
 - **Deployment pipelines** for multiple Salesforce environments (Dev, QA, Stage, Pre-Prod, Prod) on both GitHub Actions and Azure DevOps.
 - **Delta-based deployments** via `sfdx-git-delta` — only changed metadata is deployed.
+- **Vlocity/OmniStudio support** — parallel deployment track for managed-package Omni Studio components (OmniScript, DataRaptor, IntegrationProcedure, FlexiCard, etc.) stored as JSON datapacks.
 - **Dynamic test selection** — a Node.js script reads `package.xml` and runs only the relevant Apex test classes.
 - **JWT Bearer Flow authentication** — no passwords stored; uses Connected App + private key.
 - **Pre/post deployment Apex scripts** — run anonymous Apex before and after each deployment.
@@ -61,8 +62,11 @@ This repository provides:
 │   ├── sf-login/
 │   ├── sf-check-deploy/
 │   ├── sf-deploy/
+│   ├── vlocity-deploy/             # Vlocity datapack deploy/delete composite action
 │   └── run-scripts/
 ├── scripts/
+│   ├── vlocity-delta.sh            # Detects changed Vlocity component directories
+│   ├── vlocity-build-jobfile.sh    # Generates Vlocity Build Tool job YAML from manifest
 │   ├── review.js                   # PR review bot entry point
 │   ├── utils/diffParser.js
 │   └── rules/
@@ -74,6 +78,13 @@ This repository provides:
 │       └── metadata/
 ├── pre-deployment/
 └── post-deployment/
+
+vlocity/                            # Vlocity datapack exports (one subdirectory per component type)
+├── OmniScript/
+├── DataRaptor/
+├── IntegrationProcedure/
+├── FlexiCard/
+└── ...
 ```
 
 ---
@@ -108,21 +119,30 @@ Both platforms implement the same two-stage pattern: **validate → deploy**.
 3. Resolve the target commit hash (manual override or last successful run)
 4. Install `sfdx-git-delta` plugin
 5. Generate delta package between commits
-6. Generate dynamic Apex test command via `GenerateSfdxCommand.js`
-7. Authenticate to Salesforce via JWT Bearer Flow
-8. Validate deployment with targeted tests (dry-run)
-9. Validate deployment running all Apex tests (dry-run)
+6. Detect changed Vlocity components (`vlocity-delta.sh`) and set `has_changes` output
+7. Generate dynamic Apex test command via `GenerateSfdxCommand.js`
+8. Authenticate to Salesforce via JWT Bearer Flow
+9. Validate deployment with targeted tests (dry-run)
+10. Validate deployment running all Apex tests (dry-run)
+
+Two outputs control the deployment stage:
+
+| Output | Value | Meaning |
+|---|---|---|
+| `nothing_to_deploy` | `true` | No SF metadata **and** no Vlocity changes — deployment job skipped entirely |
+| `sf_nothing_to_deploy` | `true` | No SF metadata changes — `sf project deploy` step skipped, Vlocity deploy still runs |
 
 ### Stage 2 — Deployment
 
-Runs only after Stage 1 passes. For Prod, use GitHub environment protection rules (GitHub Actions) or an approval gate (Azure DevOps) to require a manual review before deployment proceeds.
+Runs only after Stage 1 passes and `nothing_to_deploy` is not `true`. For Prod, use GitHub environment protection rules (GitHub Actions) or an approval gate (Azure DevOps) to require a manual review before deployment proceeds.
 
 1. Checkout, install CLI & plugin
 2. Regenerate delta package
 3. Authenticate to Salesforce
 4. Run pre-deployment Apex scripts
-5. Deploy validated metadata
-6. Run post-deployment Apex scripts
+5. Deploy SF metadata — **skipped** if `sf_nothing_to_deploy` is `true`
+6. Deploy Vlocity components via `vlocity-deploy` action — **skipped automatically** if no Vlocity changes detected
+7. Run post-deployment Apex scripts
 
 ### Manual trigger / specific commit
 
@@ -178,6 +198,81 @@ The bot authenticates as a GitHub App (not a personal token), so comments appear
 - Missing dependencies
 - Mixed concerns in a single PR
 - Large Profile diffs
+
+---
+
+## Vlocity / OmniStudio Support
+
+This pipeline supports orgs where Omni Studio components (OmniScript, DataRaptor, IntegrationProcedure, FlexiCard, etc.) are stored as managed-package records under the `vlocity_cmt` namespace and exported as JSON datapacks. This is the model used by orgs that adopted Vlocity before Salesforce's native Omni Studio migration.
+
+### How it works
+
+Deployment runs two parallel tracks:
+
+- **Track A — Standard metadata**: `sfdx-git-delta` → `sf project deploy start` (existing flow)
+- **Track B — Vlocity datapacks**: `vlocity-delta.sh` → `vlocity packDeploy` / `packDelete`
+
+Standard metadata always deploys first, since Vlocity components frequently depend on custom fields, objects, and Apex classes that must exist in the target org before the datapacks are applied.
+
+### Datapack directory structure
+
+Export Vlocity components into the `vlocity/` directory at the repo root, following the standard Vlocity Build Tool layout:
+
+```
+vlocity/
+├── OmniScript/
+│   └── Type_SubType_Language/
+│       ├── Type_SubType_Language_DataPack.json
+│       └── Type_SubType_Language.json
+├── DataRaptor/
+│   └── ComponentName/
+│       └── ComponentName_DataPack.json
+├── IntegrationProcedure/
+├── FlexiCard/
+└── ...
+```
+
+Each component is a subdirectory two levels deep (`TYPE/ComponentName`). The delta script detects changes at this level — any file change inside a component directory marks the whole component for redeployment.
+
+### Configuring the Vlocity root path
+
+The default root path is `vlocity/`. If your export directory has a different name (e.g., `vlocity_cmt_DataPacks/`), update the `vlocity_root` input in each workflow's deploy step:
+
+```yaml
+- name: Deploy Vlocity components
+  uses: ./.github/actions/vlocity-deploy
+  with:
+    vlocity_root: vlocity_cmt_DataPacks   # change to match your export directory
+```
+
+### Pinning the Vlocity Build Tool version
+
+The `vlocity-deploy` action installs `vlocity@latest` by default. For reproducible builds, pin a specific version matching your org's managed package:
+
+```yaml
+- name: Deploy Vlocity components
+  uses: ./.github/actions/vlocity-deploy
+  with:
+    vlocity_root: vlocity
+    vlocity_version: "1.18.0"
+```
+
+### Determining your org's Omni Studio model
+
+Run this query against any sandbox to confirm whether the managed package is installed:
+
+```bash
+sf data query \
+  --query "SELECT NamespacePrefix, Name FROM ApexClass WHERE NamespacePrefix = 'vlocity_cmt' LIMIT 1" \
+  --target-org <your-org-alias>
+```
+
+- **Results returned** — org uses managed-package Vlocity; this pipeline's Vlocity track applies.
+- **No results** — org is on native Omni Studio; the standard metadata track handles it with no special configuration needed.
+
+### Integration user permissions
+
+Vlocity datapack deployments write to `vlocity_cmt__*` custom objects. The integration user's Permission Set must include Read/Create/Edit/Delete access (and View All / Modify All for record sharing) on the Vlocity-namespaced objects. Add the relevant `objectPermissions` blocks to your `CI_CD_Integration` permission set for each Vlocity object type in use.
 
 ---
 
@@ -245,5 +340,9 @@ The deployment validation step then uses this output to run a targeted subset of
 | Artifact | Description |
 |---|---|
 | `./delta` | Generated metadata delta package |
+| `./delta/vlocity/deploy-manifest.txt` | Vlocity components detected for deployment (`TYPE/ComponentName` per line) |
+| `./delta/vlocity/delete-manifest.txt` | Vlocity components detected for deletion |
+| `./delta/vlocity/vlocity-deploy-job.yaml` | Generated Vlocity Build Tool job file for deployments |
+| `./delta/vlocity/vlocity-delete-job.yaml` | Generated Vlocity Build Tool job file for deletions |
 | `sfCommandTests` | Dynamic Apex test command string |
-| Salesforce org | Deployed metadata changes |
+| Salesforce org | Deployed metadata changes (SF metadata + Vlocity datapacks) |
