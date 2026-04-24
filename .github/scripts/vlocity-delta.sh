@@ -16,7 +16,8 @@ mkdir -p "$DELTA_DIR"
 
 if [ ! -d "$VLOCITY_ROOT" ]; then
   echo "Vlocity directory '$VLOCITY_ROOT' not found — skipping Vlocity delta."
-  touch "$DELTA_DIR/deploy-manifest.txt" "$DELTA_DIR/delete-manifest.txt"
+  : > "$DELTA_DIR/deploy-manifest.txt"
+  : > "$DELTA_DIR/delete-manifest.txt"
   exit 0
 fi
 

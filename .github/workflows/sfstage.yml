@@ -159,6 +159,7 @@ jobs:
         uses: ./.github/actions/sf-deploy
 
       - name: Deploy Vlocity components
+        if: hashFiles('vlocity/**') != ''
         uses: ./.github/actions/vlocity-deploy
         with:
           vlocity_root: vlocity

@@ -6,7 +6,9 @@
       "Bash(pip show *)",
       "Bash(pip install *)",
       "Bash(pip3 install *)",
-      "Bash(npm list *)"
+      "Bash(npm list *)",
+      "Bash(git -C d:/GitHub/salesforce-devops-pipeline log --oneline -8)",
+      "Bash(git -C d:/GitHub/salesforce-devops-pipeline show --stat 6725dce)"
     ]
   }
 }
