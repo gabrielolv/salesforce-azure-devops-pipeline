@@ -14,7 +14,7 @@ This repository provides:
 - **Dynamic test selection** — a Node.js script reads `package.xml` and runs only the relevant Apex test classes.
 - **JWT Bearer Flow authentication** — no passwords stored; uses Connected App + private key.
 - **Pre/post deployment Apex scripts** — run anonymous Apex before and after each deployment.
-- **Salesforce PR Review Bot** — GitHub App that automatically reviews pull requests for Salesforce best practices across Apex, Triggers, LWC, Flows, Security, and Metadata.
+- **Salesforce PR Review Bot** — automated two-layer PR reviewer: 30+ deterministic static rules plus a Claude Sonnet AI agent that enforces Salesforce best practices and analyses cross-repo impact (e.g. trigger conflicts, flow ↔ Apex dual-automation, broken field references).
 
 ---
 
@@ -67,7 +67,8 @@ This repository provides:
 ├── scripts/
 │   ├── vlocity-delta.sh            # Detects changed Vlocity component directories
 │   ├── vlocity-build-jobfile.sh    # Generates Vlocity Build Tool job YAML from manifest
-│   ├── review.js                   # PR review bot entry point
+│   ├── review.js                   # PR review bot entry point (merges static + AI findings)
+│   ├── ai-review.js                # Claude Sonnet AI review layer (cross-repo impact analysis)
 │   ├── utils/diffParser.js
 │   └── rules/
 │       ├── apex/
@@ -152,17 +153,33 @@ Both platforms support `workflow_dispatch` (GitHub) or manual run (Azure DevOps)
 
 ## PR Review Bot (GitHub Actions)
 
-The `salesforce-pr-review.yml` workflow triggers on every pull request targeting `develop`. It runs a Node.js script that inspects the PR diff and posts inline review comments for any Salesforce best-practice violations found.
+The `salesforce-pr-review.yml` workflow triggers on every pull request targeting `develop`. It runs a two-layer review and posts inline comments plus a summary directly on the PR.
 
-### Authentication
+### How it works
 
-The bot authenticates as a GitHub App (not a personal token), so comments appear under the App's identity. Required secrets: `GH_APP_ID` and `GH_APP_PRIVATE_KEY`.
+```
+PR opened / updated
+  │
+  ├─► Layer 1 — Static rules (review.js + rules/)
+  │     Fast, deterministic pattern-matching across 30+ rules.
+  │     Always runs, zero external cost.
+  │
+  └─► Layer 2 — Claude Sonnet AI agent (ai-review.js)
+        Reads logic files (Apex, LWC, Flows) in full.
+        Reads related repo files to reason about cross-file impact.
+        Posts findings that static rules structurally cannot detect.
+```
 
-### Rules covered
+Both layers produce findings in the same schema (`ruleId`, `severity`, `path`, `startLine`, `message`, `suggestion`). They are merged and posted as a single GitHub PR review — inline comments on diff lines where possible, a findings table in the review body otherwise.
+
+- Findings from Layer 1 carry rule IDs like `SF-APEX-001`, `SF-FLOW-003`, etc.
+- Findings from Layer 2 carry rule IDs prefixed `SF-AI-` and are attributed in the review footer.
+
+### Layer 1 — Static rules
 
 **Apex**
-- No SOQL queries inside loops
-- No DML operations inside loops
+- No SOQL queries inside loops (`SF-APEX-001`)
+- No DML operations inside loops (`SF-APEX-002`)
 - Bulkified logic — collections over single-record operations
 - Apex test coverage — test classes updated when production code changes
 - No hardcoded record IDs
@@ -198,6 +215,58 @@ The bot authenticates as a GitHub App (not a personal token), so comments appear
 - Missing dependencies
 - Mixed concerns in a single PR
 - Large Profile diffs
+
+### Layer 2 — Claude Sonnet AI agent
+
+The AI agent is a **read-only reviewer**. It is explicitly instructed never to write, generate, or suggest code changes — its sole purpose is to identify and describe issues.
+
+**What the AI checks (beyond static rules):**
+
+| Category | Examples |
+|---|---|
+| Apex / Triggers | CRUD/FLS enforcement, sharing model violations, mixed DML, async anti-patterns, silent catch blocks, test quality |
+| Triggers | Logic directly in trigger body, dual-automation conflict with record-triggered flows, multiple triggers on same object |
+| Flows | Fault path missing on screen flows, hardcoded IDs/record type names, null-unsafe Get Records access |
+| LWC | Imperative Apex calls without error handling, stale reactive state |
+| Security | New fields without FLS coverage, broad permission set grants, sensitive field types |
+| Cross-repo impact | Field rename/deletion breaking other metadata, method signature change breaking callers, new validation rule breaking test data |
+
+**Cross-repo impact analysis** is the AI layer's primary value add. When a PR changes an `AccountTrigger.cls`, the agent automatically receives:
+- Other triggers on the Account object (to detect execution-order conflicts)
+- Flows referencing Account (to detect dual-automation)
+- The `Account.object-meta.xml` definition (for field/relationship context)
+
+It uses this context to reason about breakage that no pattern-matching rule can catch.
+
+### Token cost controls
+
+The AI layer has five built-in guards to keep API costs low:
+
+| Guard | Behaviour |
+|---|---|
+| Skip non-logic PRs | If the PR only touches XML metadata (profiles, translations, layouts, etc.) — Claude is never called |
+| Diff-only for metadata | Non-logic files send only the git diff, not full content |
+| Hard input cap | Total message is capped at ~12,500 tokens; context files are dropped until it fits |
+| Output cap | `max_tokens` set to 2,048 (sufficient for 15 findings) |
+| Context file limit | At most 8 related repo files are included |
+
+Actual token usage is printed in the workflow log on every run:
+
+```
+AI review: 3 logic file(s) (7 total), 4 context file(s), ~3,200 input tokens estimated
+AI review: tokens used — input: 3418, output: 612, cache_read: 820, cache_write: 0
+```
+
+Typical cost per PR on `claude-sonnet-4-6`: **$0.01 – $0.06**. XML-only PRs: **$0.00**.
+
+### Required secrets
+
+| Secret | Used by | Description |
+|---|---|---|
+| `GITHUB_TOKEN` | Both layers | Automatically provided by GitHub Actions — posts the PR review |
+| `ANTHROPIC_API_KEY` | AI layer only | Anthropic API key; if absent the AI layer is silently skipped |
+
+Add `ANTHROPIC_API_KEY` under **Settings → Secrets and variables → Actions → New repository secret**.
 
 ---
 
@@ -297,7 +366,6 @@ Create one environment per org in your repository settings and add the secrets a
 - `sfqa`
 - `sfstage`
 - `sfprod`
-- `salesforce-pr-review-bot` (requires `GH_APP_ID` and `GH_APP_PRIVATE_KEY`)
 
 ### Azure DevOps variable groups
 
