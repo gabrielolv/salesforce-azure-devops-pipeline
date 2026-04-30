@@ -2,14 +2,50 @@ import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import path from 'path';
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ── Token-budget constants ────────────────────────────────────────────────────
 const REPO_ROOT = process.cwd();
-const MAX_CONTEXT_FILES = 15;
-const MAX_FILE_CHARS    = 6_000;
-const MAX_DIFF_CHARS    = 2_500;
-const MAX_CONTENT_CHARS = 7_000;
 
-// ── File system helpers ───────────────────────────────────────────────────────
+// Lever 1 — Skip non-logic PRs entirely
+// Only files with these extensions carry logic worth deep AI reasoning.
+const LOGIC_EXTENSIONS = new Set(['.cls', '.trigger', '.js', '.html', '.flow-meta.xml']);
+
+// Lever 2 — Diff-only for non-logic files
+// These extensions get only their git diff, not their full content.
+const DIFF_ONLY_EXTENSIONS = new Set([
+  '.xml', '.profile-meta.xml', '.permissionset-meta.xml',
+  '.object-meta.xml', '.field-meta.xml', '.layout-meta.xml',
+  '.translation-meta.xml', '.labels-meta.xml', '.resource-meta.xml',
+]);
+
+// Lever 3 — Hard input cap (chars ≈ tokens × 4)
+const MAX_INPUT_CHARS   = 50_000;  // ~12 500 input tokens ceiling
+// Lever 4 — Lower output cap (15 JSON findings need < 1 500 tokens)
+const MAX_OUTPUT_TOKENS = 2_048;
+// Lever 5 — Fewer context files
+const MAX_CONTEXT_FILES = 8;
+
+const MAX_FILE_CHARS    = 5_000;  // per context file
+const MAX_DIFF_CHARS    = 2_000;  // per diff block
+const MAX_CONTENT_CHARS = 6_000;  // per logic file full content
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function extOf(filename) {
+  // Handle compound extensions like .flow-meta.xml → .flow-meta.xml
+  const compoundMatch = filename.match(/(\.[a-z-]+\.xml)$/i);
+  if (compoundMatch) return compoundMatch[1];
+  return path.extname(filename).toLowerCase();
+}
+
+function isLogicFile(filename) {
+  return LOGIC_EXTENSIONS.has(extOf(filename)) || LOGIC_EXTENSIONS.has(path.extname(filename));
+}
+
+function hasLogicFiles(changedFiles) {
+  return changedFiles.some(f => isLogicFile(f.filename));
+}
+
+function estimateChars(str) { return str?.length ?? 0; }
+
 function findFilesInDir(dir, predicate) {
   const results = [];
   if (!fs.existsSync(dir)) return results;
@@ -51,11 +87,9 @@ function readFileSafe(absPath, maxChars = MAX_FILE_CHARS) {
 function extractObjectNames(changedFiles) {
   const objects = new Set();
   for (const f of changedFiles) {
-    // force-app/.../objects/Account__c/... → Account__c
     const inObjects = f.filename.match(/\/objects\/([^/]+)\//);
     if (inObjects) objects.add(inObjects[1]);
 
-    // AccountTrigger.cls or Account_Trigger.cls → Account
     const triggerMatch = f.filename.match(/\/triggers\/([A-Za-z0-9]+?)_?[Tt]rigger\.cls$/);
     if (triggerMatch) objects.add(triggerMatch[1]);
   }
@@ -64,14 +98,14 @@ function extractObjectNames(changedFiles) {
 
 function buildRepoContext(changedFiles) {
   const changedPaths = new Set(changedFiles.map(f => f.filename));
-  const contextMap   = new Map(); // relPath → absPath (deduplication)
+  const contextMap   = new Map();
 
   const forceAppDir = path.join(REPO_ROOT, 'force-app');
   if (!fs.existsSync(forceAppDir)) return [];
 
   const objectNames = extractObjectNames(changedFiles);
 
-  // 1. Other triggers for the same object (execution-order conflicts)
+  // Other triggers on the same object — execution-order conflicts
   for (const objName of objectNames) {
     const lower = objName.toLowerCase();
     findFilesInDir(forceAppDir, (name) => {
@@ -83,7 +117,7 @@ function buildRepoContext(changedFiles) {
     });
   }
 
-  // 2. Flows referencing changed objects (flow ↔ trigger dual-automation)
+  // Flows on the same object — dual-automation detection
   for (const objName of objectNames) {
     const lower = objName.toLowerCase();
     findFilesInDir(forceAppDir, (name) =>
@@ -94,11 +128,10 @@ function buildRepoContext(changedFiles) {
     });
   }
 
-  // 3. Apex classes imported by changed LWC files
+  // Apex classes imported by changed LWC files
   for (const f of changedFiles) {
     if (!f.filename.includes('/lwc/') || !f.filename.endsWith('.js') || !f.content) continue;
-    const refs = [...f.content.matchAll(/from\s+'@salesforce\/apex\/([^'.]+)\./g)]
-      .map(m => m[1]);
+    const refs = [...f.content.matchAll(/from\s+'@salesforce\/apex\/([^'.]+)\./g)].map(m => m[1]);
     for (const className of refs) {
       findFilesInDir(forceAppDir, (name) => name === `${className}.cls`).forEach(fp => {
         const rel = toRelPath(fp);
@@ -107,7 +140,7 @@ function buildRepoContext(changedFiles) {
     }
   }
 
-  // 4. Object definitions for context on field types / relationships
+  // Object definitions for field/relationship context
   for (const objName of objectNames) {
     const objDef = path.join(forceAppDir, 'main', 'default', 'objects', objName, `${objName}.object-meta.xml`);
     if (fs.existsSync(objDef)) {
@@ -198,45 +231,65 @@ Additional rules:
 - Return [] if you find nothing new.
 - Cap output at 15 findings. Prioritise by severity then potential impact.`;
 
-function buildUserMessage(changedFiles, staticFindings, contextFiles) {
-  const lines = [];
+// Lever 2 applied here: logic files get full content; metadata XML gets diff only.
+function fileSection(f) {
+  const lines = [`### ${f.filename} (status: ${f.status})`];
 
-  lines.push('## PR Changed Files\n');
-  for (const f of changedFiles) {
-    lines.push(`### ${f.filename} (status: ${f.status})`);
-    if (f.patch) {
-      const diff = f.patch.length > MAX_DIFF_CHARS
-        ? f.patch.slice(0, MAX_DIFF_CHARS) + '\n... [diff truncated]'
-        : f.patch;
-      lines.push('```diff', diff, '```');
-    }
+  if (isLogicFile(f.filename)) {
     if (f.content) {
       const src = f.content.length > MAX_CONTENT_CHARS
-        ? f.content.slice(0, MAX_CONTENT_CHARS) + '\n... [content truncated]'
+        ? f.content.slice(0, MAX_CONTENT_CHARS) + '\n... [truncated]'
         : f.content;
-      lines.push('**Full content:**', '```', src, '```');
+      lines.push('```', src, '```');
+    } else if (f.patch) {
+      lines.push('```diff', f.patch.slice(0, MAX_DIFF_CHARS), '```');
     }
-    lines.push('');
-  }
-
-  lines.push('## Static Rule Findings (already detected — do not repeat)\n');
-  if (staticFindings.length === 0) {
-    lines.push('None.\n');
   } else {
-    for (const f of staticFindings) {
-      lines.push(`- [${f.severity}] ${f.ruleId}: ${f.message} (${f.path ?? 'repo'}:${f.startLine ?? '?'})`);
-    }
-    lines.push('');
-  }
-
-  if (contextFiles.length > 0) {
-    lines.push('## Related Repository Files (for cross-repo impact analysis)\n');
-    for (const f of contextFiles) {
-      lines.push(`### ${f.relPath}`, '```', f.content, '```\n');
+    // Non-logic file: diff is sufficient context
+    if (f.patch) {
+      lines.push('```diff', f.patch.slice(0, MAX_DIFF_CHARS), '```');
     }
   }
 
   return lines.join('\n');
+}
+
+function buildUserMessage(changedFiles, staticFindings, contextFiles) {
+  const parts = [];
+
+  parts.push('## PR Changed Files\n');
+  for (const f of changedFiles) parts.push(fileSection(f) + '\n');
+
+  parts.push('## Static Rule Findings (already detected — do not repeat)\n');
+  if (staticFindings.length === 0) {
+    parts.push('None.\n');
+  } else {
+    parts.push(
+      staticFindings
+        .map(f => `- [${f.severity}] ${f.ruleId}: ${f.message} (${f.path ?? 'repo'}:${f.startLine ?? '?'})`)
+        .join('\n') + '\n'
+    );
+  }
+
+  if (contextFiles.length > 0) {
+    parts.push('## Related Repository Files (for cross-repo impact analysis)\n');
+    for (const f of contextFiles) parts.push(`### ${f.relPath}\n\`\`\`\n${f.content}\n\`\`\`\n`);
+  }
+
+  return parts.join('\n');
+}
+
+// Lever 3: drop context files one-by-one until message fits under MAX_INPUT_CHARS.
+function pruneToFit(changedFiles, staticFindings, contextFiles) {
+  let files = [...contextFiles];
+  let msg   = buildUserMessage(changedFiles, staticFindings, files);
+
+  while (estimateChars(msg) > MAX_INPUT_CHARS && files.length > 0) {
+    files.pop();
+    msg = buildUserMessage(changedFiles, staticFindings, files);
+  }
+
+  return { message: msg, contextUsed: files.length, totalChars: estimateChars(msg) };
 }
 
 // ── Response parser ───────────────────────────────────────────────────────────
@@ -251,8 +304,8 @@ function parseAiFindings(text) {
   if (!Array.isArray(parsed)) return [];
 
   return parsed.filter(f =>
-    typeof f.ruleId    === 'string' &&
-    typeof f.message   === 'string' &&
+    typeof f.ruleId  === 'string' &&
+    typeof f.message === 'string' &&
     ['failure', 'warning', 'notice'].includes(f.severity)
   );
 }
@@ -261,38 +314,53 @@ function parseAiFindings(text) {
 export async function runAiReview(changedFiles, staticFindings) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    console.log('ANTHROPIC_API_KEY not set — skipping AI review layer');
+    console.log('AI review: ANTHROPIC_API_KEY not set — skipping');
     return [];
   }
 
-  const client = new Anthropic({ apiKey });
+  // Lever 1: bail out immediately if no logic files changed
+  if (!hasLogicFiles(changedFiles)) {
+    console.log('AI review: no logic files in PR (only metadata/XML) — skipping to save tokens');
+    return [];
+  }
+
+  const client       = new Anthropic({ apiKey });
   const contextFiles = buildRepoContext(changedFiles);
   const objectNames  = extractObjectNames(changedFiles);
 
-  console.log(
-    `AI review: ${changedFiles.length} changed file(s), ` +
-    `${contextFiles.length} context file(s), ` +
-    `object(s): ${objectNames.join(', ') || 'none detected'}`
-  );
+  // Lever 3: trim context until message fits the input budget
+  const { message, contextUsed, totalChars } = pruneToFit(changedFiles, staticFindings, contextFiles);
+  const estimatedInputTokens = Math.round(totalChars / 4);
 
-  const userMessage = buildUserMessage(changedFiles, staticFindings, contextFiles);
+  console.log(
+    `AI review: ${changedFiles.filter(f => isLogicFile(f.filename)).length} logic file(s) ` +
+    `(${changedFiles.length} total), ${contextUsed} context file(s), ` +
+    `~${estimatedInputTokens.toLocaleString()} input tokens estimated, ` +
+    `object(s): ${objectNames.join(', ') || 'none'}`
+  );
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
+    max_tokens: MAX_OUTPUT_TOKENS,  // Lever 4
     system: [
       {
         type: 'text',
         text: SYSTEM_PROMPT,
-        cache_control: { type: 'ephemeral' },
+        cache_control: { type: 'ephemeral' },  // cache system prompt across calls
       },
     ],
-    messages: [{ role: 'user', content: userMessage }],
+    messages: [{ role: 'user', content: message }],
   });
 
-  const responseText = response.content[0]?.text ?? '';
-  const findings     = parseAiFindings(responseText);
+  const usage = response.usage;
+  console.log(
+    `AI review: tokens used — input: ${usage.input_tokens}, ` +
+    `output: ${usage.output_tokens}, ` +
+    `cache_read: ${usage.cache_read_input_tokens ?? 0}, ` +
+    `cache_write: ${usage.cache_creation_input_tokens ?? 0}`
+  );
 
+  const findings = parseAiFindings(response.content[0]?.text ?? '');
   console.log(`AI review: ${findings.length} finding(s) returned`);
   return findings;
 }
